@@ -117,7 +117,7 @@ const BalanceSheet: React.FC<BalanceSheetProps> = ({ onNavigate }) => {
 
         // LIABILITIES (Credit balances, flip sign to be positive for display)
         const payablesRaw = getAccountBalance(state.payableAccounts.find(acc => acc.name === 'Accounts Payable')?.id || '') + getAccountBalance(state.payableAccounts.find(acc => acc.name === 'Customs Charges Payable')?.id || '');
-        const payables = -payablesRaw; // Flip sign
+        const payables = -payablesRaw; // Flip sign to show positive Liability
         
         const loansRaw = calculateTotalBalance(state.loanAccounts);
         const loans = -loansRaw; // Flip sign

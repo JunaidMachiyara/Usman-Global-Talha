@@ -259,6 +259,7 @@ const App: React.FC = () => {
 
     const [isNewItemModalOpen, setIsNewItemModalOpen] = useState<boolean>(false);
     const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
+    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false); // Mobile Menu State
 
     const [navigationHistory, setNavigationHistory] = useState<Array<{ module: Module; subView: string | null }>>([]);
     const prevModuleRef = useRef<Module>();
@@ -377,6 +378,7 @@ const App: React.FC = () => {
             setActiveModule(module);
         }
         setActiveSubView(subView || null);
+        setIsMobileMenuOpen(false); // Close mobile menu on navigate
     };
     
     useEffect(() => {
@@ -529,7 +531,7 @@ const App: React.FC = () => {
         return (
             <button
                 onClick={() => handleNavigation(module)}
-                className={`relative px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeModule === module ? 'bg-white text-blue-600 shadow' : 'text-white hover:bg-blue-700'}`}
+                className={`relative px-4 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap ${activeModule === module ? 'bg-white text-blue-600 shadow' : 'text-white hover:bg-blue-700'}`}
                 title={`Shortcut: ${shortcut}`}
             >
                 {label}
@@ -571,11 +573,21 @@ const App: React.FC = () => {
             <header className="bg-blue-600 text-white shadow-md sticky top-0 z-40 no-print">
                 <div className="container mx-auto px-4 py-3 flex justify-between items-center">
                     <div className="flex items-center space-x-3">
+                         {/* Mobile Hamburger Button */}
+                        <button 
+                            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                            className="lg:hidden text-white focus:outline-none"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                            </svg>
+                        </button>
+
                         <img src="https://uxwing.com/wp-content/themes/uxwing/download/location-travel-map/globe-icon.png" alt="Usman Global Logo" className="h-10 w-10" />
-                        <h1 className="text-2xl font-bold tracking-tight">Usman Global</h1>
+                        <h1 className="text-xl md:text-2xl font-bold tracking-tight truncate max-w-[200px] md:max-w-none">Usman Global</h1>
                     </div>
                     <div className="flex items-center space-x-4">
-                        <nav className="flex space-x-1 bg-blue-800 p-1 rounded-lg">
+                        <nav className="hidden lg:flex space-x-1 bg-blue-800 p-1 rounded-lg overflow-x-auto">
                             <NavButton module="analytics" label="Analytics" shortcut="F1" />
                             <NavButton module="dashboard" label="Dashboard" shortcut="F2" />
                             <NavButton module="setup" label="Setup" shortcut="F3" />
@@ -590,7 +602,7 @@ const App: React.FC = () => {
                             <NavButton module="chat" label="Chat" shortcut="F12" unreadCount={unreadMessageCount} />
                         </nav>
                         <div className="flex items-center space-x-3 border-l border-blue-500 pl-4">
-                            <div className="w-36 text-right">
+                            <div className="w-36 text-right hidden md:block">
                                 {saveStatus === 'saving' && <span className="text-xs text-yellow-300 animate-pulse flex items-center justify-end">Saving...</span>}
                                 {saveStatus === 'synced' && (
                                     <span className="text-xs text-green-300 flex items-center justify-end">
@@ -605,12 +617,12 @@ const App: React.FC = () => {
                                     </span>
                                 )}
                             </div>
-                            <button onClick={() => setIsHelpModalOpen(true)} title="Keyboard Shortcuts" className="p-2 text-white hover:bg-blue-700 rounded-full">
+                            <button onClick={() => setIsHelpModalOpen(true)} title="Keyboard Shortcuts" className="p-2 text-white hover:bg-blue-700 rounded-full hidden md:block">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24" stroke="currentColor" strokeWidth={2}>
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                                 </svg>
                             </button>
-                            <div className="text-right">
+                            <div className="text-right hidden md:block">
                                 <p className="font-semibold text-sm">{userProfile?.name}</p>
                                 <p className="text-xs text-blue-200 capitalize">{userProfile?.isAdmin ? 'Administrator' : 'Custom User'}</p>
                             </div>
@@ -618,8 +630,34 @@ const App: React.FC = () => {
                         </div>
                     </div>
                 </div>
+
+                {/* Mobile Menu Drawer */}
+                {isMobileMenuOpen && (
+                    <div className="lg:hidden absolute top-full left-0 w-full bg-blue-700 shadow-lg z-50 border-t border-blue-500">
+                        <div className="flex flex-col p-4 space-y-2">
+                            <p className="text-blue-200 text-xs uppercase font-bold mb-2">Navigation</p>
+                            <NavButton module="analytics" label="Analytics" shortcut="F1" />
+                            <NavButton module="dashboard" label="Dashboard" shortcut="F2" />
+                            <NavButton module="setup" label="Setup" shortcut="F3" />
+                            <NavButton module="dataEntry" label="Data Entry" shortcut="F4" />
+                            <NavButton module="accounting" label="Accounting" shortcut="F5" />
+                            <NavButton module="reports" label="Reports" shortcut="F6" />
+                            <NavButton module="posting" label="Posting" shortcut="F7" />
+                            <NavButton module="logistics" label="Logistics" shortcut="F8" />
+                            <NavButton module="hr" label="HR" shortcut="F9" />
+                            <NavButton module="customs" label="Customs" shortcut="F10" />
+                            <NavButton module="admin" label="Admin" shortcut="F11" />
+                            <NavButton module="chat" label="Chat" shortcut="F12" unreadCount={unreadMessageCount} />
+                            
+                            <div className="border-t border-blue-500 pt-2 mt-2">
+                                <p className="text-white text-sm font-semibold">{userProfile?.name}</p>
+                                <p className="text-blue-300 text-xs">{userProfile?.isAdmin ? 'Administrator' : 'User'}</p>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </header>
-            <main className={isFullScreenModule ? "p-4 md:p-8" : "container mx-auto p-4 md:p-8"}>
+            <main className={isFullScreenModule ? "p-2 md:p-8" : "container mx-auto p-2 md:p-8"}>
                 {renderModule()}
             </main>
             {isNewItemModalOpen && (
