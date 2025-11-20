@@ -215,25 +215,36 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ entityName, onClose
             transform: (row: any) => ({ name: row.name }),
         },
         originalStock: {
-            headers: ['Supplier ID', 'Original Type ID', 'Batch Number', 'Date (YYYY-MM-DD)', 'Division ID', 'Quantity', 'Rate', 'Currency', 'Conversion Rate'],
+            headers: ['Supplier ID (Required)', 'Original Type ID (Required)', 'Division ID (Required)', 'Quantity (Required)', 'Rate (USD) (Required)'],
             entity: 'originalPurchases' as const,
-            keys: ['supplierId', 'originalTypeId', 'batchNumber', 'date', 'divisionId', 'quantityPurchased', 'rate', 'currency', 'conversionRate'],
-            uniqueIdentifier: 'batchNumber', 
+            keys: ['supplierId', 'originalTypeId', 'divisionId', 'quantityPurchased', 'rate'],
+            uniqueIdentifier: 'batchNumber', // Placeholder for internal logic, duplicates allowed across uploads
             validate: (row: any) => {
-                if (!row.supplierId || !row.originalTypeId || !row.batchNumber || !row.date || !row.divisionId || !row.quantityPurchased || !row.rate || !row.currency || !row.conversionRate) return 'All fields are required.';
+                if (!row.supplierId) return 'Supplier ID is required.';
+                if (!row.originalTypeId) return 'Original Type ID is required.';
+                if (!row.divisionId) return 'Division ID is required.';
+                if (!row.quantityPurchased || isNaN(Number(row.quantityPurchased))) return 'Quantity must be a valid number.';
+                if (!row.rate || isNaN(Number(row.rate))) return 'Rate must be a valid number.';
+
                 if (!state.suppliers.some(s => s.id === row.supplierId)) return `Supplier ID '${row.supplierId}' not found.`;
                 if (!state.originalTypes.some(ot => ot.id === row.originalTypeId)) return `Original Type ID '${row.originalTypeId}' not found.`;
                 if (!state.divisions.some(d => d.id === row.divisionId)) return `Division ID '${row.divisionId}' not found.`;
-                if (isNaN(Number(row.quantityPurchased)) || isNaN(Number(row.rate)) || isNaN(Number(row.conversionRate))) return 'Quantity, Rate, and Conversion Rate must be numbers.';
-                if (!Object.values(Currency).includes(row.currency as Currency)) return `Invalid Currency: ${row.currency}.`;
-                if (state.originalPurchases.some(p => p.supplierId === row.supplierId && p.originalTypeId === row.originalTypeId && p.batchNumber === row.batchNumber)) return `Purchase with this Supplier/Type/Batch already exists in the system.`;
+                
                 return null;
             },
             transform: (row: any) => ({
-                ...row,
+                id: `pur_import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                supplierId: row.supplierId,
+                originalTypeId: row.originalTypeId,
+                divisionId: row.divisionId,
                 quantityPurchased: Number(row.quantityPurchased),
                 rate: Number(row.rate),
-                conversionRate: Number(row.conversionRate)
+                currency: Currency.Dollar,
+                conversionRate: 1,
+                date: new Date().toISOString().split('T')[0],
+                batchNumber: `OLD-STOCK-${Math.floor(100000 + Math.random() * 900000)}`,
+                subSupplierId: undefined,
+                originalProductId: undefined,
             }),
         },
         employees: {
@@ -434,10 +445,10 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ entityName, onClose
                             : rowData[uniqueIdentifier]
                         )?.toLowerCase();
                         
-                        if (identifierValue && allUniqueIdentifiersInFile.has(identifierValue)) {
+                        if (identifierValue && allUniqueIdentifiersInFile.has(identifierValue) && entityName !== 'originalStock') {
                             invalidRows.push({ rowData, error: `Duplicate identifier in file: '${rowData[uniqueIdentifier]}'.`, rowIndex: i + 2 });
                         } else {
-                            if (typeof identifierValue === 'string') {
+                            if (typeof identifierValue === 'string' && entityName !== 'originalStock') {
                                 allUniqueIdentifiersInFile.add(identifierValue);
                             }
                             validRows.push(transform(rowData));
@@ -467,9 +478,10 @@ const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ entityName, onClose
             let nextVoucherNumber = state.nextJournalVoucherNumber;
     
             parsedData.validRows.forEach((row: any) => {
+                // row is already transformed by the transform function in config
                 const purchase: OriginalPurchased = {
                     ...row,
-                    id: `pur_import_${row.supplierId}_${row.batchNumber}_${Date.now()}`,
+                    id: `pur_import_${row.supplierId}_${row.batchNumber}_${Date.now()}_${Math.random().toString(36).substring(2)}`, // Ensure unique ID
                 };
                 batchActions.push({ type: 'ADD_ENTITY', payload: { entity: 'originalPurchases', data: purchase } });
     

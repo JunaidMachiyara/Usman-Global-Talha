@@ -10,6 +10,7 @@ interface PostingModuleProps {
 
 interface ItemDetails {
     rate: number | '';
+    packageRate: number | '';
     currency: Currency;
     conversionRate: number;
 }
@@ -34,13 +35,28 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
         setSelectedInvoice(invoice);
         const initialDetails = invoice.items.reduce((acc, item) => {
             const itemInfo = state.items.find(i => i.id === item.itemId);
+            
+            // Default rate comes from item.rate or itemInfo.avgSalesPrice. This is per Kg usually.
+            const ratePerKg = item.rate || itemInfo?.avgSalesPrice || '';
+            
+            let packageRate: number | '' = '';
+            if (itemInfo) {
+                const isPackage = [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemInfo.packingType);
+                const size = isPackage ? (itemInfo.baleSize || 1) : 1;
+                if (ratePerKg !== '' && size > 0) {
+                    packageRate = Number(ratePerKg) * size;
+                }
+            }
+
             acc[item.itemId] = {
-                rate: item.rate || itemInfo?.avgSalesPrice || '',
+                rate: ratePerKg,
+                packageRate: packageRate,
                 currency: item.currency || Currency.Dollar,
                 conversionRate: item.conversionRate || 1,
             };
             return acc;
         }, {} as Record<string, ItemDetails>);
+        
         setItemDetails(initialDetails);
         setFreightForwarderId(invoice.freightForwarderId || '');
         
@@ -53,17 +69,40 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
 
     const handleItemDetailChange = (itemId: string, field: keyof ItemDetails, value: any) => {
         setItemDetails(prev => {
-            const currentDetails = prev[itemId];
-            const newDetails = { ...currentDetails, [field]: value };
+            const currentDetails = { ...prev[itemId] };
+            const itemInfo = state.items.find(i => i.id === itemId);
             
             if (field === 'currency') {
                 const newCurrency = value.currency;
                 const newConversionRate = value.conversionRate;
-                 newDetails.currency = newCurrency;
-                 newDetails.conversionRate = newConversionRate;
+                 currentDetails.currency = newCurrency;
+                 currentDetails.conversionRate = newConversionRate;
+            } else {
+                (currentDetails as any)[field] = value;
+
+                const isPackage = itemInfo && [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemInfo.packingType);
+                const size = (isPackage ? itemInfo.baleSize : 1) || 1;
+
+                if (field === 'rate') {
+                    // Changed Price per Kg -> Update Package Price
+                    const valNum = parseFloat(value);
+                    if (value !== '' && !isNaN(valNum)) {
+                        currentDetails.packageRate = valNum * size;
+                    } else {
+                        currentDetails.packageRate = '';
+                    }
+                } else if (field === 'packageRate') {
+                    // Changed Package Price -> Update Price per Kg
+                    const valNum = parseFloat(value);
+                    if (value !== '' && !isNaN(valNum) && size > 0) {
+                         currentDetails.rate = valNum / size;
+                    } else {
+                         currentDetails.rate = '';
+                    }
+                }
             }
             
-            return { ...prev, [itemId]: newDetails };
+            return { ...prev, [itemId]: currentDetails };
         });
     };
 
@@ -251,23 +290,26 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                 <th className="p-3 font-semibold text-slate-600">Item</th>
                                 <th className="p-3 font-semibold text-slate-600">Category</th>
                                 <th className="p-3 font-semibold text-slate-600 text-right">Quantity</th>
-                                <th className="p-3 font-semibold text-slate-600 text-right">Bale Size</th>
+                                <th className="p-3 font-semibold text-slate-600 text-right">Package Size</th>
                                 <th className="p-3 font-semibold text-slate-600 text-right">Total Kg</th>
-                                <th className="p-3 font-semibold text-slate-600 w-64">Currency & Exchange Rate</th>
-                                <th className="p-3 font-semibold text-slate-600 w-40">Price (per Kg)</th>
+                                <th className="p-3 font-semibold text-slate-600 w-48">Currency & Exchange Rate</th>
+                                <th className="p-3 font-semibold text-slate-600 w-32">Package Price</th>
+                                <th className="p-3 font-semibold text-slate-600 w-32">Price (per Kg)</th>
                                 <th className="p-3 font-semibold text-slate-600 text-right">Total Worth</th>
                             </tr>
                         </thead>
                         <tbody>
                             {selectedInvoice.items.map(item => {
-                                const details = itemDetails[item.itemId] || { rate: '', currency: Currency.Dollar, conversionRate: 1 };
+                                const details = itemDetails[item.itemId] || { rate: '', packageRate: '', currency: Currency.Dollar, conversionRate: 1 };
                                 const itemDetailsFromState = state.items.find(i => i.id === item.itemId);
                                 const category = state.categories.find(c => c.id === itemDetailsFromState?.categoryId)?.name || 'N/A';
-                                const baleSize = itemDetailsFromState?.packingType === PackingType.Bales ? itemDetailsFromState.baleSize : 'N/A';
+                                const isPackage = itemDetailsFromState && [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemDetailsFromState.packingType);
+                                const packageSize = isPackage ? itemDetailsFromState.baleSize : 1;
+                                const packageSizeDisplay = isPackage ? itemDetailsFromState.baleSize : 'N/A';
                                 
                                 let totalKgForItem = 0;
                                 if (itemDetailsFromState) {
-                                    if (itemDetailsFromState.packingType === PackingType.Bales || itemDetailsFromState.packingType === PackingType.Sacks) {
+                                    if (isPackage) {
                                         totalKgForItem = item.quantity * itemDetailsFromState.baleSize;
                                     } else { // PackingType.Kg
                                         totalKgForItem = item.quantity;
@@ -281,7 +323,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                     <td className="p-3 text-slate-700">{itemName(item.itemId)}</td>
                                     <td className="p-3 text-slate-700">{category}</td>
                                     <td className="p-3 text-slate-700 text-right">{item.quantity}</td>
-                                    <td className="p-3 text-slate-700 text-right">{baleSize}</td>
+                                    <td className="p-3 text-slate-700 text-right">{packageSizeDisplay}</td>
                                     <td className="p-3 text-slate-700 text-right font-medium">{totalKgForItem.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                                     <td className="p-3">
                                         <CurrencyInput 
@@ -293,10 +335,22 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                     <td className="p-3">
                                         <input
                                             type="number"
+                                            value={details.packageRate}
+                                            onChange={e => handleItemDetailChange(item.itemId, 'packageRate', e.target.value)}
+                                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                                            placeholder={`Pkg Price`}
+                                            min="0.01"
+                                            step="0.01"
+                                            disabled={!isPackage}
+                                        />
+                                    </td>
+                                    <td className="p-3">
+                                        <input
+                                            type="number"
                                             value={details.rate}
                                             onChange={e => handleItemDetailChange(item.itemId, 'rate', e.target.value)}
                                             className="w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                                            placeholder={`Price in ${details.currency}`}
+                                            placeholder={`/ Kg`}
                                             min="0.01"
                                             step="0.01"
                                         />

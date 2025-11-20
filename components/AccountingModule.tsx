@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { JournalEntry, JournalEntryType, Currency, UserProfile, AppState, SalesInvoice, PackingType, InvoiceItem } from '../types.ts';
@@ -170,10 +171,14 @@ const NewVoucherForm: React.FC<NewVoucherFormProps> = ({ userProfile, showNotifi
                 fromToOptions: [
                     { label: 'Suppliers', entities: state.suppliers },
                     { label: 'Vendors', entities: state.vendors },
+                    { label: 'Customers', entities: state.customers },
                     { label: 'Commission Agents', entities: state.commissionAgents },
                     { label: 'Freight Forwarders', entities: state.freightForwarders },
                     { label: 'Clearing Agents', entities: state.clearingAgents },
                     { label: 'Employees', entities: state.employees.map(e => ({ id: e.id, name: e.fullName })) },
+                    { label: 'Loan Accounts', entities: state.loanAccounts },
+                    { label: 'Capital Accounts', entities: state.capitalAccounts },
+                    { label: 'Investment Accounts', entities: state.investmentAccounts },
                 ],
                 cashBankLabel: 'From Account',
                 cashBankOptions: [ ...state.cashAccounts, ...state.banks.map(b => ({ id: b.id, name: b.accountTitle })) ],
@@ -317,15 +322,33 @@ const NewVoucherForm: React.FC<NewVoucherFormProps> = ({ userProfile, showNotifi
         } else if (entryType === JournalEntryType.Payment) {
             voucherId = `PV-${String(state.nextPaymentVoucherNumber).padStart(3, '0')}`;
             
-            let entityType: JournalEntry['entityType'];
-            if(state.suppliers.some(s => s.id === fromToAccount)) entityType = 'supplier';
-            else if(state.vendors.some(v => v.id === fromToAccount)) entityType = 'vendor';
-            else if(state.commissionAgents.some(c => c.id === fromToAccount)) entityType = 'commissionAgent';
-            else if(state.freightForwarders.some(f => f.id === fromToAccount)) entityType = 'freightForwarder';
-            else if(state.clearingAgents.some(c => c.id === fromToAccount)) entityType = 'clearingAgent';
-            else if(state.employees.some(e => e.id === fromToAccount)) entityType = 'employee';
+            let debitAccount = 'AP-001'; // Default for suppliers/vendors/etc
+            let entityType: JournalEntry['entityType'] | undefined;
+            let entityId: string | undefined = fromToAccount;
+
+            if (state.customers.some(c => c.id === fromToAccount)) {
+                entityType = 'customer';
+                debitAccount = 'AR-001'; // Debit AR to reduce credit balance (refund)
+            } else if (state.suppliers.some(s => s.id === fromToAccount)) {
+                 entityType = 'supplier';
+            } else if (state.vendors.some(v => v.id === fromToAccount)) {
+                 entityType = 'vendor';
+            } else if (state.commissionAgents.some(c => c.id === fromToAccount)) {
+                 entityType = 'commissionAgent';
+            } else if (state.freightForwarders.some(f => f.id === fromToAccount)) {
+                 entityType = 'freightForwarder';
+            } else if (state.clearingAgents.some(c => c.id === fromToAccount)) {
+                 entityType = 'clearingAgent';
+            } else if (state.employees.some(e => e.id === fromToAccount)) {
+                 entityType = 'employee';
+            } else {
+                // It's likely a direct account (Loan, Capital, Investment)
+                debitAccount = fromToAccount;
+                entityId = undefined;
+                entityType = undefined;
+            }
             
-            debitEntry = { ...baseEntry, id: `je-d-${voucherId}`, voucherId, account: 'AP-001', debit: amountInDollar, credit: 0, entityId: fromToAccount, entityType };
+            debitEntry = { ...baseEntry, id: `je-d-${voucherId}`, voucherId, account: debitAccount, debit: amountInDollar, credit: 0, entityId, entityType };
             creditEntry = { ...baseEntry, id: `je-c-${voucherId}`, voucherId, account: cashBankAccount, debit: 0, credit: amountInDollar };
         } else { // Expense
             voucherId = `EV-${String(state.nextExpenseVoucherNumber).padStart(3, '0')}`;
