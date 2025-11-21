@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { 
@@ -9,6 +10,16 @@ import ItemSelector from './ui/ItemSelector.tsx';
 import CurrencyInput from './ui/CurrencyInput.tsx';
 import Modal from './ui/Modal.tsx';
 import EntitySelector from './ui/EntitySelector.tsx';
+
+// Define default rates for auto-population
+const defaultConversionRates: { [key: string]: number } = {
+    [Currency.AustralianDollar]: 0.66,
+    [Currency.Pound]: 1.34,
+    [Currency.AED]: 0.2724795640326975,
+    [Currency.SaudiRiyal]: 0.27,
+    [Currency.Euro]: 1.17,
+    [Currency.Dollar]: 1,
+};
 
 // --- Reusable Helper Components ---
 const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen = false }) => {
@@ -77,7 +88,8 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
 
         return {
             date: new Date().toISOString().split('T')[0], supplierId: '', originalTypeId: '', quantityPurchased: undefined,
-            rate: undefined, currency: Currency.Dollar, conversionRate: 1, divisionId: '', subDivisionId: '',
+            rate: undefined, invoiceAmount: undefined as number | undefined, 
+            currency: Currency.Dollar, conversionRate: 1, divisionId: '', subDivisionId: '',
             batchNumber: newBatchNumber, containerNumber: '', discountSurcharge: undefined, 
             freightForwarderId: '', freightAmount: undefined,
             clearingAgentId: '', clearingAmount: undefined, 
@@ -87,7 +99,7 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
         };
     };
 
-    const [formData, setFormData] = useState<Partial<OriginalPurchased>>(getInitialState());
+    const [formData, setFormData] = useState<Partial<OriginalPurchased> & { invoiceAmount?: number }>(getInitialState());
     const [freightCurrencyData, setFreightCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
     const [clearingCurrencyData, setClearingCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
     const [commissionCurrencyData, setCommissionCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
@@ -113,9 +125,13 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
 
     useEffect(() => {
         const supplier = state.suppliers.find(s => s.id === formData.supplierId);
+        const newCurrency = supplier?.defaultCurrency || Currency.Dollar;
+        const newRate = defaultConversionRates[newCurrency] || 1;
+
         setFormData(prev => ({
             ...prev,
-            currency: supplier?.defaultCurrency || Currency.Dollar,
+            currency: newCurrency,
+            conversionRate: newRate,
             subSupplierId: '',
         }));
     }, [formData.supplierId, state.suppliers]);
@@ -146,7 +162,36 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
-        setFormData(prev => ({ ...prev, [name]: value }));
+        
+        setFormData(prev => {
+            const newData: any = { ...prev, [name]: value };
+            const qty = parseFloat(String(newData.quantityPurchased || '0'));
+
+            if (name === 'rate') {
+                const rateVal = parseFloat(value);
+                if (qty > 0 && !isNaN(rateVal) && value !== '') {
+                    newData.invoiceAmount = parseFloat((qty * rateVal).toFixed(2));
+                } else if (value === '') {
+                    newData.invoiceAmount = undefined;
+                }
+            } else if (name === 'invoiceAmount') {
+                const amountVal = parseFloat(value);
+                if (qty > 0 && !isNaN(amountVal) && value !== '') {
+                    newData.rate = parseFloat((amountVal / qty).toFixed(6));
+                } else if (value === '') {
+                    newData.rate = undefined;
+                }
+            } else if (name === 'quantityPurchased') {
+                const qVal = parseFloat(value);
+                const rVal = parseFloat(String(newData.rate || '0'));
+                
+                if (!isNaN(qVal) && value !== '' && rVal > 0) {
+                    newData.invoiceAmount = parseFloat((qVal * rVal).toFixed(2));
+                }
+            }
+
+            return newData;
+        });
     };
 
     const handleCurrencyChange = (newCurrency: { currency: Currency; conversionRate: number }) => {
@@ -287,9 +332,10 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
 
                 <div className="border rounded-lg p-4 bg-white">
                     <h3 className="text-lg font-semibold text-slate-800 mb-4 border-b pb-2">Quantity & Pricing</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                         <div><label className="block text-sm font-medium text-slate-700">Quantity</label><input type="number" name="quantityPurchased" value={formData.quantityPurchased || ''} onChange={handleChange} required className={`${inputClasses}`}/></div>
-                        <div><label className="block text-sm font-medium text-slate-700">Purchase Rate</label><input type="number" name="rate" step="0.01" value={formData.rate || ''} onChange={handleChange} required className={`${inputClasses}`}/></div>
+                        <div><label className="block text-sm font-medium text-slate-700">Purchase Rate</label><input type="number" name="rate" step="any" value={formData.rate || ''} onChange={handleChange} required className={`${inputClasses}`}/></div>
+                        <div><label className="block text-sm font-medium text-slate-700">Invoice Amount</label><input type="number" name="invoiceAmount" step="any" value={formData.invoiceAmount || ''} onChange={handleChange} className={`${inputClasses}`}/></div>
                         <div className="md:col-span-1"><label className="block text-sm font-medium text-slate-700">Currency</label><CurrencyInput value={{currency: formData.currency!, conversionRate: formData.conversionRate!}} onChange={handleCurrencyChange} /></div>
                         <div><label className="block text-sm font-medium text-slate-700">Discount(-) / Surcharge(+)</label><input type="number" name="discountSurcharge" step="0.01" value={formData.discountSurcharge || ''} onChange={handleChange} className={`${inputClasses}`} placeholder="Amount in USD"/></div>
                     </div>
@@ -298,7 +344,7 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
                 <div className="border rounded-lg p-4 bg-white">
                     <h3 className="text-lg font-semibold text-slate-800 mb-4 border-b pb-2">Logistics & Destination</h3>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div><label className="block text-sm font-medium text-slate-700">Container #</label><input type="text" name="containerNumber" value={formData.containerNumber} onChange={handleChange} className={`${inputClasses}`}/></div>
+                        <div><label className="block text-sm font-medium text-slate-700">Container #</label><input type="text" name="containerNumber" value={formData.containerNumber} onChange={handleChange} className={`${inputClasses}`} required /></div>
                         <div><label className="block text-sm font-medium text-slate-700">Division</label><select name="divisionId" value={formData.divisionId} onChange={handleChange} required className={`${inputClasses}`}><option value="">Select Division</option>{state.divisions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></div>
                         <div><label className="block text-sm font-medium text-slate-700">Sub Division</label><select name="subDivisionId" value={formData.subDivisionId} onChange={handleChange} disabled={!formData.divisionId || availableSubDivisions.length === 0} className={`${inputClasses}`}><option value="">Select Sub-Division</option>{availableSubDivisions.map(sd => <option key={sd.id} value={sd.id}>{sd.name}</option>)}</select></div>
                     </div>

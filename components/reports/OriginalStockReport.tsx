@@ -1,8 +1,9 @@
+
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportToolbar from './ReportToolbar.tsx';
 import ReportFilters from './ReportFilters.tsx';
-import { OriginalPurchased, PackingType } from '../../types.ts';
+import { OriginalPurchased, PackingType, LogisticsStatus } from '../../types.ts';
 
 const OriginalStockReport: React.FC = () => {
     const { state } = useData();
@@ -37,6 +38,7 @@ const OriginalStockReport: React.FC = () => {
         });
     };
 
+    // UPDATED LOGIC: Use Received Weight if container is off-loaded
     const stockByCombination = useMemo(() => {
         const stock = new Map<string, number>();
         const getKey = (p: { supplierId: string; subSupplierId?: string; originalTypeId: string; originalProductId?: string }) => {
@@ -45,7 +47,24 @@ const OriginalStockReport: React.FC = () => {
 
         state.originalPurchases.forEach(p => {
             const key = getKey(p);
-            stock.set(key, (stock.get(key) || 0) + p.quantityPurchased);
+            
+            // Check if there is a cleared logistics entry for this purchase
+            const logistics = state.logisticsEntries.find(l => l.purchaseId === p.id && l.status === LogisticsStatus.Cleared);
+            
+            // Use actual received weight if available, else invoiced quantity
+            let quantityToAdd = p.quantityPurchased;
+
+            if (logistics && logistics.receiveWeight) {
+                const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
+                if (originalType && originalType.packingType !== PackingType.Kg && originalType.packingSize > 0) {
+                    // Normalize back to units if not Kg
+                    quantityToAdd = logistics.receiveWeight / originalType.packingSize;
+                } else {
+                    quantityToAdd = logistics.receiveWeight;
+                }
+            }
+
+            stock.set(key, (stock.get(key) || 0) + quantityToAdd);
         });
 
         state.originalOpenings.forEach(o => {
@@ -53,7 +72,7 @@ const OriginalStockReport: React.FC = () => {
             stock.set(key, (stock.get(key) || 0) - o.opened);
         });
         return stock;
-    }, [state.originalPurchases, state.originalOpenings]);
+    }, [state.originalPurchases, state.originalOpenings, state.logisticsEntries, state.originalTypes]);
 
     const reportData = React.useMemo(() => {
         const data = [];

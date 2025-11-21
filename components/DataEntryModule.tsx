@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { OriginalOpening, Production, OriginalType, PackingType, UserProfile, Module, InvoiceStatus, Item, JournalEntry, JournalEntryType, Currency, SalesInvoice, OriginalPurchased, LogisticsEntry, LogisticsStatus, FinishedGoodsPurchase, DocumentStatus } from '../types.ts';
@@ -11,20 +12,22 @@ import StockLotModule from './StockLotModule.tsx';
 import CurrencyInput from './ui/CurrencyInput.tsx';
 import EntitySelector from './ui/EntitySelector.tsx';
 
-const Notification: React.FC<{ message: string; onTimeout: () => void }> = ({ message, onTimeout }) => {
+const Notification: React.FC<{ message: string; type: 'success' | 'error'; onTimeout: () => void }> = ({ message, type, onTimeout }) => {
     useEffect(() => {
-        const timer = setTimeout(onTimeout, 2000);
+        const timer = setTimeout(onTimeout, 3000);
         return () => clearTimeout(timer);
     }, [onTimeout]);
 
+    const bgColor = type === 'error' ? 'bg-red-500' : 'bg-green-500';
+
     return (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg z-50 animate-fade-in-out">
+        <div className={`fixed top-5 left-1/2 -translate-x-1/2 ${bgColor} text-white py-2 px-4 rounded-lg shadow-lg z-50 animate-fade-in-out`}>
             {message}
         </div>
     );
 };
 
-const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
+const OriginalOpeningForm: React.FC<{ showNotification: (msg: string, type?: 'success' | 'error') => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
     const { state, dispatch } = useData();
     const [formData, setFormData] = useState({ date: new Date().toISOString().split('T')[0], supplierId: '', subSupplierId: '', originalTypeId: '', originalProductId: '', opened: '' });
     
@@ -37,6 +40,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
     
     const minDate = userProfile?.isAdmin ? '' : new Date().toISOString().split('T')[0];
 
+    // LOGIC UPDATE: Calculate stock based on Received Weight if off-loaded, otherwise Invoice Weight
     const stockByCombination = useMemo(() => {
         const stock = new Map<string, number>();
         const getKey = (p: { supplierId: string; subSupplierId?: string; originalTypeId: string; originalProductId?: string }) => {
@@ -45,7 +49,39 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
 
         state.originalPurchases.forEach(p => {
             const key = getKey(p);
-            stock.set(key, (stock.get(key) || 0) + p.quantityPurchased);
+            
+            // Check for logistics entry (Off-loading)
+            // Note: Checking for Cleared OR Arrived to cover the new status logic
+            const logistics = state.logisticsEntries.find(l => l.purchaseId === p.id && (l.status === LogisticsStatus.Cleared || l.status === LogisticsStatus.Arrived));
+            
+            // Use Received Weight if available, otherwise Invoice Weight
+            const effectiveQuantity = (logistics && logistics.receiveWeight) 
+                ? logistics.receiveWeight 
+                : p.quantityPurchased;
+
+            // Note: If original type is not Kg, we might need to convert units. 
+            // However, purchases are usually tracked in the same unit as openings (e.g. Bales).
+            // If the off-load was recorded in Kg but purchase in Bales, this simple switch works 
+            // if we assume the 'quantityPurchased' field stores the primary unit count.
+            // *Correction*: Logistics receiveWeight is ALWAYS in Kg.
+            // OriginalPurchased.quantityPurchased is in Units (Bales/Kg).
+            // We need to normalize to the Unit used for Opening.
+            
+            let quantityToAdd = p.quantityPurchased;
+
+            if (logistics && logistics.receiveWeight) {
+                const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
+                if (originalType && originalType.packingType !== PackingType.Kg && originalType.packingSize > 0) {
+                    // Convert received Kg back to approximate Units for stock availability
+                    // Example: Rec 900kg. Type is 100kg Bale. Result: 9 Bales.
+                    quantityToAdd = logistics.receiveWeight / originalType.packingSize;
+                } else {
+                    // If packing is Kg, or size unknown, use weight directly
+                    quantityToAdd = logistics.receiveWeight;
+                }
+            }
+
+            stock.set(key, (stock.get(key) || 0) + quantityToAdd);
         });
 
         state.originalOpenings.forEach(o => {
@@ -53,7 +89,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
             stock.set(key, (stock.get(key) || 0) - o.opened);
         });
         return stock;
-    }, [state.originalPurchases, state.originalOpenings]);
+    }, [state.originalPurchases, state.originalOpenings, state.logisticsEntries, state.originalTypes]);
 
     const availableSuppliers = useMemo(() => {
         const supplierIdsWithStock = new Set<string>();
@@ -174,7 +210,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
         }
 
         if (openedNum > availableStock) {
-            alert(`Warning: You are opening ${openedNum} units, but only ${availableStock} are available. This will result in negative stock.`);
+            alert(`Warning: You are opening ${openedNum} units, but only ${availableStock.toFixed(2)} are available. This will result in negative stock.`);
         }
 
         const newOpening: OriginalOpening = {
@@ -189,7 +225,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
         };
         dispatch({ type: 'ADD_ENTITY', payload: { entity: 'originalOpenings', data: newOpening } });
         
-        // --- START: Automatic Journal Entry ---
+        // --- START: Automatic Journal Entry (UPDATED FOR REVALUATION LOGIC) ---
         const relevantPurchases = state.originalPurchases.filter(p =>
             p.supplierId === newOpening.supplierId &&
             (p.subSupplierId || undefined) === (newOpening.subSupplierId || undefined) &&
@@ -199,14 +235,21 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
     
         if (relevantPurchases.length > 0) {
             let totalCostUSD = 0;
-            let totalKgPurchased = 0;
+            let totalKgAvailable = 0; // This will use Received Weight if available
     
             relevantPurchases.forEach(p => {
                 const oType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
                 if (!oType) return;
                 
-                const purchaseKg = oType.packingType === PackingType.Kg ? p.quantityPurchased : p.quantityPurchased * oType.packingSize;
+                const logistics = state.logisticsEntries.find(l => l.purchaseId === p.id && (l.status === LogisticsStatus.Cleared || l.status === LogisticsStatus.Arrived));
+                
+                // Use Actual Received Weight for valuation if available
+                let purchaseKg = logistics && logistics.receiveWeight 
+                    ? logistics.receiveWeight 
+                    : (oType.packingType === PackingType.Kg ? p.quantityPurchased : p.quantityPurchased * oType.packingSize);
+
                 if (purchaseKg > 0) {
+                    // Calculate Total Landed Cost of the Purchase
                     const itemValueUSD = (p.quantityPurchased * p.rate) * (p.conversionRate || 1);
                     const freightUSD = (p.freightAmount || 0) * (p.freightConversionRate || 1);
                     const clearingUSD = (p.clearingAmount || 0) * (p.clearingConversionRate || 1);
@@ -215,18 +258,20 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
                     const landedCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD + discountSurchargeUSD;
                     
                     totalCostUSD += landedCostUSD;
-                    totalKgPurchased += purchaseKg;
+                    totalKgAvailable += purchaseKg;
                 }
             });
     
-            if (totalKgPurchased > 0) {
-                const avgCostPerKg = totalCostUSD / totalKgPurchased;
+            if (totalKgAvailable > 0) {
+                // Re-calculate rate based on actual received weight. 
+                // E.g., Paid $1000 for 1000kg ($1/kg). Received 900kg. New Rate = $1000/900 = $1.11/kg.
+                const avgCostPerKg = totalCostUSD / totalKgAvailable;
                 const openingValue = newOpening.totalKg * avgCostPerKg;
                 
                 if (openingValue > 0) {
                     const voucherId = `AUTO-OPEN-${newOpening.id}`;
                     const supplier = state.suppliers.find(s => s.id === newOpening.supplierId);
-                    const description = `Cost of raw material opened for production from ${supplier?.name || newOpening.supplierId}`;
+                    const description = `Raw material consumption from ${supplier?.name || newOpening.supplierId} (Avg Rate: $${avgCostPerKg.toFixed(3)}/kg)`;
     
                     // DEBIT: Move value into inventory asset account
                     const debitEntry: JournalEntry = {
@@ -263,7 +308,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
 
 
         setFormData({ ...formData, opened: '' }); // Keep selections, clear quantity
-        showNotification("Data Submitted & Journal Entry Posted");
+        showNotification("Data Submitted & Inventory Valued");
     };
     
     const handleOpenEditModal = (opening: OriginalOpening) => {
@@ -352,7 +397,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
                     <div><label className="block text-sm font-medium text-slate-700">Original Product</label><select value={formData.originalProductId} onChange={e => setFormData({...formData, originalProductId: e.target.value})} className="mt-1 w-full p-2 rounded-md" disabled={!formData.originalTypeId || availableOriginalProducts.length === 0}><option value="">None / Not Applicable</option>{availableOriginalProducts.map(op => <option key={op.id} value={op.id}>{op.name}</option>)}</select></div>
                      <div>
                         <label className="block text-sm font-medium text-slate-700">Available Stock (units)</label>
-                        <input type="number" value={availableStock} readOnly className="mt-1 w-full p-2 rounded-md bg-slate-200 text-slate-500" />
+                        <input type="number" value={availableStock.toFixed(2)} readOnly className="mt-1 w-full p-2 rounded-md bg-slate-200 text-slate-500" />
                     </div>
                     <div><label className="block text-sm font-medium text-slate-700">Opened (units)</label><input type="number" value={formData.opened} onChange={e => setFormData({...formData, opened: e.target.value})} className="mt-1 w-full p-2 rounded-md" min="1" disabled={!formData.originalTypeId}/></div>
                     <div><label className="block text-sm font-medium text-slate-700">Total Kg</label><input type="number" value={totalKg} readOnly className="mt-1 w-full p-2 rounded-md bg-slate-200 text-slate-500"/></div>
@@ -424,7 +469,7 @@ const OriginalOpeningForm: React.FC<{ showNotification: (msg: string) => void; u
     );
 };
 
-const BalesOpeningForm: React.FC<{ showNotification: (msg: string) => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
+const BalesOpeningForm: React.FC<{ showNotification: (msg: string, type?: 'success' | 'error') => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
     const { state, dispatch } = useData();
     const [formData, setFormData] = useState({ date: new Date().toISOString().split('T')[0], itemId: '', opened: '' });
     const [totalKg, setTotalKg] = useState(0);
@@ -714,7 +759,7 @@ const BalesOpeningForm: React.FC<{ showNotification: (msg: string) => void; user
 };
 
 const ProductionForm: React.FC<{ 
-    showNotification: (msg: string) => void;
+    showNotification: (msg: string, type?: 'success' | 'error') => void;
     requestSetupItem: () => void;
     userProfile: UserProfile | null;
 }> = ({ showNotification, requestSetupItem, userProfile }) => {
@@ -1082,7 +1127,7 @@ interface RebalingListItem {
     totalKg: number;
 }
 
-const RebalingForm: React.FC<{ showNotification: (msg: string) => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
+const RebalingForm: React.FC<{ showNotification: (msg: string, type?: 'success' | 'error') => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
     const { state, dispatch } = useData();
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
     
@@ -1257,7 +1302,7 @@ const RebalingForm: React.FC<{ showNotification: (msg: string) => void; userProf
 };
 // --- END: Re-baling Form ---
 
-const DirectSalesForm: React.FC<{ showNotification: (msg: string) => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
+const DirectSalesForm: React.FC<{ showNotification: (msg: string, type?: 'success' | 'error') => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
     const { state, dispatch } = useData();
     const formatCurrency = (val: number | undefined) => val ? val.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) : '$0.00';
 
@@ -1510,7 +1555,7 @@ const DirectSalesForm: React.FC<{ showNotification: (msg: string) => void; userP
         </div>
     );
 };
-const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
+const OffloadingForm: React.FC<{ showNotification: (msg: string, type?: 'success' | 'error') => void; userProfile: UserProfile | null }> = ({ showNotification, userProfile }) => {
     const { state, dispatch } = useData();
 
     // Form State
@@ -1519,6 +1564,10 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
     const [receivedWeight, setReceivedWeight] = useState<number | ''>('');
     const [warehouseId, setWarehouseId] = useState<string>('');
     
+    // Added Supplier Filter and Status Filter
+    const [supplierFilter, setSupplierFilter] = useState('');
+    const [statusFilter, setStatusFilter] = useState<string>(LogisticsStatus.InTransit);
+
     // Staged items for tallying (for Finished Goods)
     type StagedItem = { itemId: string; itemName: string; quantity: number };
     const [stagedItems, setStagedItems] = useState<StagedItem[]>([]);
@@ -1562,16 +1611,39 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
                 ground: '', 
                 unload: '', 
                 documentStatus: DocumentStatus.Pending, 
-                freightForwarderId: p.freightForwarderId
+                freightForwarderId: p.freightForwarderId,
+                warehouseId: undefined, // Placeholder doesn't have warehouse yet
+                receiveWeight: undefined
             }));
 
         // Combine existing entries with placeholders
         const allPossibleEntries = [...state.logisticsEntries, ...placeholderEntries];
         
-        // Now filter the combined list for "In Transit" status
-        return allPossibleEntries.filter(entry => entry.status === LogisticsStatus.InTransit);
+        // Use the Status Filter to determine visibility.
+        // Default is In Transit, which hides Arrived/Cleared items naturally.
+        return allPossibleEntries.filter(entry => {
+            // If statusFilter is set, strict match.
+            // Placeholders have status: InTransit.
+            if (statusFilter) {
+                return entry.status === statusFilter;
+            }
+            return true; // Show all if no filter
+        });
 
-    }, [state.logisticsEntries, allPurchasesMap]);
+    }, [state.logisticsEntries, allPurchasesMap, statusFilter]);
+
+    const filteredLogisticsEntries = useMemo(() => {
+        if (!supplierFilter) return eligibleLogisticsEntries;
+        return eligibleLogisticsEntries.filter(entry => {
+            const purchase = allPurchasesMap.get(entry.purchaseId);
+            return purchase?.supplierId === supplierFilter;
+        });
+    }, [eligibleLogisticsEntries, supplierFilter, allPurchasesMap]);
+
+    const availableSuppliers = useMemo(() => {
+        const supplierIds = new Set(eligibleLogisticsEntries.map(e => allPurchasesMap.get(e.purchaseId)?.supplierId).filter(Boolean));
+        return state.suppliers.filter(s => supplierIds.has(s.id));
+    }, [eligibleLogisticsEntries, allPurchasesMap, state.suppliers]);
 
     // Details of the selected purchase
     const selectedPurchaseDetails = useMemo(() => {
@@ -1587,17 +1659,32 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
         const division = state.divisions.find(d => d.id === purchase.divisionId);
         const subDivision = state.subDivisions.find(sd => sd.id === purchase.subDivisionId);
 
+        // START FIX: Auto-calculate Invoiced Weight if missing
+        let invoicedWeight = purchase.containerInvoicedWeight || 0;
+        if (invoicedWeight === 0 && purchase.purchaseType === 'original') {
+             const op = purchase as OriginalPurchased;
+             const ot = state.originalTypes.find(t => t.id === op.originalTypeId);
+             if (ot) {
+                 if (ot.packingType === PackingType.Kg) {
+                     invoicedWeight = op.quantityPurchased;
+                 } else {
+                     invoicedWeight = op.quantityPurchased * ot.packingSize;
+                 }
+             }
+        }
+        // END FIX
+
         return {
             purchase,
             purchaseType: purchase.purchaseType,
             supplierName: supplier?.name || 'N/A',
             batchNumber: purchase.batchNumber || 'N/A',
             containerNumber: purchase.containerNumber || 'N/A',
-            invoicedWeight: purchase.containerInvoicedWeight || 0,
+            invoicedWeight: invoicedWeight, // Use calculated weight
             divisionName: division?.name || 'N/A',
             subDivisionName: subDivision?.name || 'N/A',
         };
-    }, [selectedLogisticsId, eligibleLogisticsEntries, allPurchasesMap, state.suppliers, state.divisions, state.subDivisions]);
+    }, [selectedLogisticsId, eligibleLogisticsEntries, allPurchasesMap, state.suppliers, state.divisions, state.subDivisions, state.originalTypes]);
 
     // Reset form fields when selection changes to avoid stale data
     useEffect(() => {
@@ -1655,11 +1742,18 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
         setWarehouseId('');
         setStagedItems([]);
         setCurrentItem({ itemId: '', quantity: '' });
+        // Reset filters to give a "refresh" effect
+        setStatusFilter(LogisticsStatus.InTransit);
+        setSupplierFilter('');
     };
 
     const handleFinalize = () => {
-        if (!selectedLogisticsId || !warehouseId) {
-            showNotification("Please select a container and a warehouse.");
+        if (!selectedLogisticsId) {
+            showNotification("Please select a container.", 'error');
+            return;
+        }
+        if (!warehouseId) {
+            showNotification("Please select a warehouse.", 'error');
             return;
         }
 
@@ -1668,7 +1762,7 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
 
         if (isFinishedGoods) {
             if (stagedItems.length === 0) {
-                showNotification("For Finished Goods, you must tally at least one item.");
+                showNotification("For Finished Goods, you must tally at least one item.", 'error');
                 return;
             }
             finalReceivedWeight = tallyTotals.totalKg;
@@ -1685,23 +1779,40 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
             });
         } else {
             if (!receivedWeight || Number(receivedWeight) <= 0) {
-                showNotification("Please enter a valid received weight.");
+                showNotification("Please enter a valid received weight.", 'error');
                 return;
             }
             finalReceivedWeight = Number(receivedWeight);
         }
 
-        // Update the Logistics Entry
-        const logisticsUpdate = {
-            id: selectedLogisticsId,
-            status: LogisticsStatus.Cleared,
-            unload: offloadDate,
-            receiveWeight: finalReceivedWeight,
-            warehouseId: warehouseId,
-        };
-        dispatch({ type: 'UPDATE_ENTITY', payload: { entity: 'logisticsEntries', data: logisticsUpdate } });
+        if (selectedLogisticsId < 0) {
+            // This is a new entry (placeholder), so we need to create it first
+            const newEntry: LogisticsEntry = {
+                id: state.nextLogisticsSNo,
+                purchaseId: selectedPurchaseDetails!.purchase.id,
+                batchNumber: selectedPurchaseDetails!.purchase.batchNumber || '',
+                dateOfLoading: selectedPurchaseDetails!.purchase.date,
+                status: 'Arrived', // CHANGED: Set to 'Arrived' string literal
+                unload: offloadDate,
+                receiveWeight: finalReceivedWeight,
+                warehouseId: warehouseId,
+                documentStatus: DocumentStatus.Pending,
+                freightForwarderId: selectedPurchaseDetails!.purchase.freightForwarderId,
+            };
+            dispatch({ type: 'ADD_ENTITY', payload: { entity: 'logisticsEntries', data: newEntry } });
+        } else {
+            // Update existing logistics entry
+            const logisticsUpdate = {
+                id: selectedLogisticsId,
+                status: 'Arrived', // CHANGED: Set to 'Arrived' string literal
+                unload: offloadDate,
+                receiveWeight: finalReceivedWeight,
+                warehouseId: warehouseId,
+            };
+            dispatch({ type: 'UPDATE_ENTITY', payload: { entity: 'logisticsEntries', data: logisticsUpdate } });
+        }
         
-        showNotification(`Container off-loading for ${selectedPurchaseDetails?.containerNumber} saved successfully.`);
+        showNotification(`Container off-loading for ${selectedPurchaseDetails?.containerNumber} saved successfully. Status set to Arrived.`, 'success');
         resetForm();
     };
 
@@ -1714,30 +1825,32 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string) => void; userPr
             <h3 className="text-lg font-bold text-slate-700">Container Off-loading</h3>
 
             {/* Top selection area */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-end p-4 border rounded-lg bg-slate-50">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-6 items-end p-4 border rounded-lg bg-slate-50">
                 <div>
                     <label className="block text-sm font-medium text-slate-700">Date</label>
                     <input type="date" value={offloadDate} onChange={e => setOffloadDate(e.target.value)} min={minDate} className="mt-1 w-full p-2 rounded-md" />
                 </div>
                 <div>
-                    <label className="block text-sm font-medium text-slate-700">Batch Number (In Transit)</label>
-                    <select value={selectedLogisticsId} onChange={e => setSelectedLogisticsId(e.target.value === '' ? '' : Number(e.target.value))} className="mt-1 w-full p-2 rounded-md">
-                        <option value="">Select a batch...</option>
-                        {eligibleLogisticsEntries.map(entry => {
-                            const purchase = allPurchasesMap.get(entry.purchaseId);
-                            if (!purchase || !purchase.batchNumber) return null;
-                            return ( <option key={`batch-${entry.id}`} value={entry.id}> {purchase.batchNumber} </option> );
-                        })}
+                    <label className="block text-sm font-medium text-slate-700">Filter by Status</label>
+                    <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="mt-1 w-full p-2 rounded-md">
+                        {Object.values(LogisticsStatus).map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                 </div>
                 <div>
-                    <label className="block text-sm font-medium text-slate-700">Container Number (In Transit)</label>
+                    <label className="block text-sm font-medium text-slate-700">Filter by Supplier</label>
+                    <select value={supplierFilter} onChange={e => setSupplierFilter(e.target.value)} className="mt-1 w-full p-2 rounded-md">
+                        <option value="">All Suppliers</option>
+                        {availableSuppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-slate-700">Container (Active)</label>
                     <select value={selectedLogisticsId} onChange={e => setSelectedLogisticsId(e.target.value === '' ? '' : Number(e.target.value))} className="mt-1 w-full p-2 rounded-md">
                         <option value="">Select a container...</option>
-                        {eligibleLogisticsEntries.map(entry => {
+                        {filteredLogisticsEntries.map(entry => {
                             const purchase = allPurchasesMap.get(entry.purchaseId);
                             if (!purchase || !purchase.containerNumber) return null;
-                            return ( <option key={`container-${entry.id}`} value={entry.id}> {purchase.containerNumber} </option> );
+                            return ( <option key={`container-${entry.id}`} value={entry.id}> {purchase.containerNumber} ({purchase.batchNumber}) </option> );
                         })}
                     </select>
                 </div>
@@ -1870,7 +1983,7 @@ interface DataEntryProps {
 
 const DataEntryModule: React.FC<DataEntryProps> = ({ setModule, requestSetupItem, userProfile, initialView }) => {
     const [view, setView] = useState<FormView>('opening');
-    const [notification, setNotification] = useState<string | null>(null);
+    const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
     const [openingView, setOpeningView] = useState<'original' | 'bales'>('original');
     
     const dataEntrySubModules = [
@@ -1891,8 +2004,8 @@ const DataEntryModule: React.FC<DataEntryProps> = ({ setModule, requestSetupItem
         }
     }, [initialView]);
 
-    const showNotification = (message: string) => {
-        setNotification(message);
+    const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
+        setNotification({message, type});
     };
 
     const getOpeningButtonClass = (v: 'original' | 'bales') => 
@@ -1925,7 +2038,7 @@ const DataEntryModule: React.FC<DataEntryProps> = ({ setModule, requestSetupItem
 
     return (
         <div className="space-y-6">
-            {notification && <Notification message={notification} onTimeout={() => setNotification(null)} />}
+            {notification && <Notification message={notification.message} type={notification.type} onTimeout={() => setNotification(null)} />}
             <div className="bg-white p-4 rounded-lg shadow-md">
                 <div className="flex flex-wrap items-center gap-2">
                     {dataEntrySubModules.map(module => (

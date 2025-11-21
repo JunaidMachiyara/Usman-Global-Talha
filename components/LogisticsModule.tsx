@@ -1,9 +1,11 @@
+
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useData } from '../context/DataContext.tsx';
-import { LogisticsEntry, LogisticsStatus, DocumentStatus, OriginalPurchased, FinishedGoodsPurchase, Supplier, UserProfile } from '../types.ts';
+import { LogisticsEntry, LogisticsStatus, DocumentStatus, OriginalPurchased, FinishedGoodsPurchase, Supplier, UserProfile, PackingType } from '../types.ts';
 
 const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userProfile }) => {
     const { state, dispatch } = useData();
+    const [activeTab, setActiveTab] = useState<'management' | 'shortage'>('management');
     const [editingRowId, setEditingRowId] = useState<number | null>(null);
     const [editedData, setEditedData] = useState<LogisticsEntry | null>(null);
     const [filters, setFilters] = useState({
@@ -70,6 +72,8 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
         const existingEntries = state.logisticsEntries;
 
         // FIX: Cast the array from map values to the correct type to resolve type inference issues.
+        // Assign temporary IDs as negative numbers starting from -1.
+        // This ensures they are unique and distinct from existing (positive) IDs.
         const placeholderEntries: LogisticsEntry[] = (Array.from(purchasesWithContainersMap.values()) as PurchaseSource[])
             .filter(p => !existingPurchaseIds.has(p.id))
             .map((p, index) => ({
@@ -161,6 +165,57 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
         return filteredEntries;
     }, [allLogisticsEntries, filters, purchasesWithContainersMap]);
     
+    // Shortage Report Calculation
+    const shortageData = useMemo(() => {
+        return state.logisticsEntries
+            .filter(entry => entry.status === LogisticsStatus.Cleared && entry.receiveWeight !== undefined)
+            .map(entry => {
+                const purchase = purchasesWithContainersMap.get(entry.purchaseId);
+                if (!purchase) return null;
+
+                let invoicedWeight = purchase.containerInvoicedWeight || 0;
+                // Fallback if container weight not set, calculate from items/qty
+                if (invoicedWeight === 0) {
+                    if (purchase.type === 'original') {
+                        const op = purchase as OriginalPurchased;
+                        const type = state.originalTypes.find(t => t.id === op.originalTypeId);
+                        invoicedWeight = type?.packingType === PackingType.Kg ? op.quantityPurchased : op.quantityPurchased * (type?.packingSize || 0);
+                    } else {
+                        // Assuming finished goods don't usually have shortages in Kg logic unless specified
+                    }
+                }
+
+                const receivedWeight = entry.receiveWeight || 0;
+                const difference = receivedWeight - invoicedWeight;
+                const percentage = invoicedWeight > 0 ? (difference / invoicedWeight) * 100 : 0;
+                
+                // Calculate Value Impact (Cost Absorption)
+                // Since total cost remains same, the 'loss' is technically absorbed into higher per-unit cost.
+                // But we can show the value of the missing goods at original invoice rate.
+                let invoiceRate = 0;
+                if (purchase.type === 'original') {
+                    invoiceRate = (purchase as OriginalPurchased).rate;
+                }
+                const impactValue = difference * invoiceRate;
+
+                return {
+                    id: entry.id,
+                    date: entry.unload || entry.dateOfLoading,
+                    supplierName: suppliersMap.get(purchase.supplierId) || 'N/A',
+                    containerNumber: purchase.containerNumber || 'N/A',
+                    batchNumber: purchase.batchNumber || 'N/A',
+                    invoicedWeight,
+                    receivedWeight,
+                    difference,
+                    percentage,
+                    impactValue
+                };
+            })
+            .filter(item => item !== null && Math.abs(item.difference) > 0.01) // Only show variances
+            .sort((a, b) => (a?.difference || 0) - (b?.difference || 0)); // Sort by biggest shortage first
+    }, [state.logisticsEntries, purchasesWithContainersMap, suppliersMap]);
+
+
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
             if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
@@ -295,9 +350,17 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
 
         const clearingDisplay = data.clearingBill || (purchase?.clearingAmount ? `${purchase.clearingAmount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ${purchase.clearingCurrency}` : '');
 
+        // Calculate display serial number. 
+        // For saved entries (id > 0), show the actual ID.
+        // For new/placeholder entries (id < 0), calculate the projected ID: nextLogisticsSNo + (abs(id) - 1).
+        // id is -(index + 1). So -1 -> index 0 -> nextSNo + 0. -2 -> index 1 -> nextSNo + 1.
+        const displayId = data.id > 0 
+            ? data.id 
+            : state.nextLogisticsSNo + (Math.abs(data.id) - 1);
+
         return (
             <tr key={data.id} className={isEditing ? 'bg-yellow-100' : (data.id < 0 ? 'bg-slate-50' : 'bg-white')}>
-                {renderCell(data.id > 0 ? data.id : 'New', "text-center font-medium")}
+                {renderCell(displayId, "text-center font-medium")}
                 {isEditing ? renderCell(renderInput(data.batchNumber, e => handleChange('batchNumber', e))) : renderCell(details?.batchNumber || data.batchNumber)}
                 {isEditing ? renderCell(renderDateInput(data.dateOfLoading, e => handleChange('dateOfLoading', e))) : renderCell(data.dateOfLoading)}
                 {renderCell(details?.supplierName)}
@@ -349,109 +412,180 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
         <div className="space-y-6">
             <h1 className="text-3xl font-bold text-slate-800">Logistics Management</h1>
             
-             <div className="bg-white p-4 rounded-lg shadow-md">
-                <div className="p-4 bg-slate-50 rounded-lg border flex flex-wrap gap-4 items-center">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Supplier</label>
-                        <select name="supplierId" value={filters.supplierId} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
-                            <option value="">All Suppliers</option>
-                            {Array.from(suppliersMap.entries()).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-                        </select>
-                    </div>
-                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Container #</label>
-                        <select name="containerNumber" value={filters.containerNumber} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
-                            <option value="">All Containers</option>
-                            {uniqueContainerNumbers.map(cn => <option key={cn} value={cn}>{cn}</option>)}
-                        </select>
-                    </div>
-                     <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Batch #</label>
-                        <select name="batchNumber" value={filters.batchNumber} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
-                            <option value="">All Batches</option>
-                            {uniqueBatchNumbers.map(bn => <option key={bn} value={bn}>{bn}</option>)}
-                        </select>
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
-                        <select name="status" value={filters.status} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
-                            <option value="">All Statuses</option>
-                            {Object.values(LogisticsStatus).map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                    </div>
-                    <button onClick={resetFilters} className="px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 text-sm mt-auto">Reset Filters</button>
-                    <div ref={notificationRef} className="relative ml-auto mt-auto">
-                        <button
-                            onClick={() => setIsNotificationsOpen(prev => !prev)}
-                            className="relative p-2 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300 transition-colors"
-                            aria-label={`View notifications (${notifications.length})`}
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                            </svg>
-                            {notifications.length > 0 && (
-                                <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white">
-                                    {notifications.length}
-                                </span>
-                            )}
-                        </button>
-                        {isNotificationsOpen && (
-                            <div className="absolute top-full right-0 mt-2 w-80 bg-white rounded-md shadow-lg border z-20">
-                                <div className="p-3 border-b font-semibold text-slate-700">Notifications</div>
-                                {notifications.length > 0 ? (
-                                    <ul className="max-h-80 overflow-y-auto">
-                                        {notifications.map(notif => (
-                                            <li key={notif.id} className="px-3 py-2 border-b text-sm text-slate-600 hover:bg-slate-50">
-                                                {notif.message}
-                                            </li>
-                                        ))}
-                                    </ul>
-                                ) : (
-                                    <p className="p-4 text-sm text-center text-slate-500">No upcoming events.</p>
+            <div className="bg-white p-4 rounded-lg shadow-md">
+                <div className="flex space-x-2 border-b pb-4 mb-4">
+                    <button 
+                        onClick={() => setActiveTab('management')} 
+                        className={`px-4 py-2 rounded-md font-semibold transition-colors ${activeTab === 'management' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+                    >
+                        Container Tracking
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('shortage')} 
+                        className={`px-4 py-2 rounded-md font-semibold transition-colors ${activeTab === 'shortage' ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+                    >
+                        Shortage/Excess Report
+                    </button>
+                </div>
+
+                {activeTab === 'management' && (
+                    <>
+                        <div className="p-4 bg-slate-50 rounded-lg border flex flex-wrap gap-4 items-center mb-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Supplier</label>
+                                <select name="supplierId" value={filters.supplierId} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
+                                    <option value="">All Suppliers</option>
+                                    {Array.from(suppliersMap.entries()).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                                </select>
+                            </div>
+                             <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Container #</label>
+                                <select name="containerNumber" value={filters.containerNumber} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
+                                    <option value="">All Containers</option>
+                                    {uniqueContainerNumbers.map(cn => <option key={cn} value={cn}>{cn}</option>)}
+                                </select>
+                            </div>
+                             <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Batch #</label>
+                                <select name="batchNumber" value={filters.batchNumber} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
+                                    <option value="">All Batches</option>
+                                    {uniqueBatchNumbers.map(bn => <option key={bn} value={bn}>{bn}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                                <select name="status" value={filters.status} onChange={handleFilterChange} className="w-full p-2 border border-slate-300 rounded-md text-sm">
+                                    <option value="">All Statuses</option>
+                                    {Object.values(LogisticsStatus).map(s => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                            </div>
+                            <button onClick={resetFilters} className="px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 text-sm mt-auto">Reset Filters</button>
+                            <div ref={notificationRef} className="relative ml-auto mt-auto">
+                                <button
+                                    onClick={() => setIsNotificationsOpen(prev => !prev)}
+                                    className="relative p-2 bg-slate-200 text-slate-700 rounded-md hover:bg-slate-300 transition-colors"
+                                    aria-label={`View notifications (${notifications.length})`}
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                                    </svg>
+                                    {notifications.length > 0 && (
+                                        <span className="absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white">
+                                            {notifications.length}
+                                        </span>
+                                    )}
+                                </button>
+                                {isNotificationsOpen && (
+                                    <div className="absolute top-full right-0 mt-2 w-80 bg-white rounded-md shadow-lg border z-20">
+                                        <div className="p-3 border-b font-semibold text-slate-700">Notifications</div>
+                                        {notifications.length > 0 ? (
+                                            <ul className="max-h-80 overflow-y-auto">
+                                                {notifications.map(notif => (
+                                                    <li key={notif.id} className="px-3 py-2 border-b text-sm text-slate-600 hover:bg-slate-50">
+                                                        {notif.message}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        ) : (
+                                            <p className="p-4 text-sm text-center text-slate-500">No upcoming events.</p>
+                                        )}
+                                    </div>
                                 )}
                             </div>
-                        )}
-                    </div>
-                </div>
-            </div>
+                        </div>
 
-            <div className="bg-white p-4 rounded-lg shadow-md overflow-x-auto">
-                <table className="w-full text-xs border-collapse">
-                    <thead>
-                        <tr className="bg-slate-100">
-                            {renderHeader('S.No', 'text-center')}
-                            {renderHeader('Batch #')}
-                            {renderHeader('Loading Date')}
-                            {renderHeader('Supplier')}
-                            {renderHeader('Division')}
-                            {renderHeader('Container #')}
-                            {renderHeader('Category')}
-                            {renderHeader('Inv. Wt', 'text-right')}
-                            {renderHeader('Status')}
-                            {renderHeader('ETD')}
-                            {renderHeader('ETA')}
-                            {renderHeader('Port Storage')}
-                            {renderHeader('D/o VLD')}
-                            {renderHeader('Ground')}
-                            {renderHeader('Unload')}
-                            {renderHeader('Rec. Wt', 'text-right')}
-                            {renderHeader('Warehouse')}
-                            {renderHeader('F.FDR')}
-                            {renderHeader('Docs Status')}
-                            {renderHeader('C. Agent')}
-                            {renderHeader('Clearing Bill / Amt')}
-                            {renderHeader('Actions')}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {displayEntries.map(entry => renderRow(entry, editingRowId === entry.id))}
-                        {displayEntries.length === 0 && (
-                            <tr>
-                                <td colSpan={22} className="text-center text-slate-500 py-6">No entries match the current filters.</td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-xs border-collapse">
+                                <thead>
+                                    <tr className="bg-slate-100">
+                                        {renderHeader('S.No', 'text-center')}
+                                        {renderHeader('Batch #')}
+                                        {renderHeader('Loading Date')}
+                                        {renderHeader('Supplier')}
+                                        {renderHeader('Division')}
+                                        {renderHeader('Container #')}
+                                        {renderHeader('Category')}
+                                        {renderHeader('Inv. Wt', 'text-right')}
+                                        {renderHeader('Status')}
+                                        {renderHeader('ETD')}
+                                        {renderHeader('ETA')}
+                                        {renderHeader('Port Storage')}
+                                        {renderHeader('D/o VLD')}
+                                        {renderHeader('Ground')}
+                                        {renderHeader('Unload')}
+                                        {renderHeader('Rec. Wt', 'text-right')}
+                                        {renderHeader('Warehouse')}
+                                        {renderHeader('F.FDR')}
+                                        {renderHeader('Docs Status')}
+                                        {renderHeader('C. Agent')}
+                                        {renderHeader('Clearing Bill / Amt')}
+                                        {renderHeader('Actions')}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {displayEntries.map(entry => renderRow(entry, editingRowId === entry.id))}
+                                    {displayEntries.length === 0 && (
+                                        <tr>
+                                            <td colSpan={22} className="text-center text-slate-500 py-6">No entries match the current filters.</td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
+                )}
+
+                {activeTab === 'shortage' && (
+                    <div>
+                        <h3 className="text-lg font-bold text-slate-700 mb-4">Shortage & Excess Report</h3>
+                        <p className="text-sm text-slate-600 mb-4">
+                            This report highlights cleared containers where the Received Weight differs from the Invoiced Weight.
+                            <br/>
+                            <span className="text-xs italic">* Impact Value = Difference (Kg) x Original Invoice Rate. This cost is automatically absorbed into the weighted average cost of the stock.</span>
+                        </p>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left table-auto text-sm border-collapse">
+                                <thead className="bg-slate-100">
+                                    <tr>
+                                        <th className="p-2 border font-semibold text-slate-600">Date</th>
+                                        <th className="p-2 border font-semibold text-slate-600">Supplier</th>
+                                        <th className="p-2 border font-semibold text-slate-600">Batch #</th>
+                                        <th className="p-2 border font-semibold text-slate-600">Container #</th>
+                                        <th className="p-2 border font-semibold text-slate-600 text-right">Inv. Weight</th>
+                                        <th className="p-2 border font-semibold text-slate-600 text-right">Rec. Weight</th>
+                                        <th className="p-2 border font-semibold text-slate-600 text-right">Difference</th>
+                                        <th className="p-2 border font-semibold text-slate-600 text-right">% Var</th>
+                                        <th className="p-2 border font-semibold text-slate-600 text-right">Impact Value ($)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {shortageData && shortageData.map(row => (
+                                        <tr key={row?.id} className="hover:bg-slate-50">
+                                            <td className="p-2 border text-slate-700">{row?.date}</td>
+                                            <td className="p-2 border text-slate-700">{row?.supplierName}</td>
+                                            <td className="p-2 border text-slate-700">{row?.batchNumber}</td>
+                                            <td className="p-2 border text-slate-700">{row?.containerNumber}</td>
+                                            <td className="p-2 border text-right text-slate-700">{row?.invoicedWeight?.toLocaleString()}</td>
+                                            <td className="p-2 border text-right text-slate-700 font-medium">{row?.receivedWeight?.toLocaleString()}</td>
+                                            <td className={`p-2 border text-right font-bold ${row!.difference < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                {row?.difference?.toLocaleString()}
+                                            </td>
+                                            <td className={`p-2 border text-right ${row!.percentage < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                {row?.percentage?.toFixed(2)}%
+                                            </td>
+                                            <td className="p-2 border text-right text-slate-600">
+                                                {row?.impactValue?.toLocaleString(undefined, {style: 'currency', currency: 'USD'})}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {(!shortageData || shortageData.length === 0) && (
+                                        <tr><td colSpan={9} className="p-4 text-center text-slate-500">No discrepancies found in cleared containers.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
