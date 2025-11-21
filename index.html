@@ -155,6 +155,20 @@
         -moz-appearance: none;
         appearance: none;
       }
+
+      /* Prevent screen shaking by forcing vertical scrollbar and hiding custom scrollbars */
+      html {
+        overflow-y: scroll;
+      }
+      
+      .no-scrollbar::-webkit-scrollbar {
+          display: none;
+      }
+      
+      .no-scrollbar {
+          -ms-overflow-style: none;  /* IE and Edge */
+          scrollbar-width: none;  /* Firefox */
+      }
     </style>
   <script type="importmap">
 {

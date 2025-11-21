@@ -587,7 +587,7 @@ const App: React.FC = () => {
                         <h1 className="text-xl md:text-2xl font-bold tracking-tight truncate max-w-[200px] md:max-w-none">Usman Global</h1>
                     </div>
                     <div className="flex items-center space-x-4">
-                        <nav className="hidden lg:flex space-x-1 bg-blue-800 p-1 rounded-lg overflow-x-auto">
+                        <nav className="hidden lg:flex space-x-1 bg-blue-800 p-1 rounded-lg overflow-x-auto no-scrollbar">
                             <NavButton module="analytics" label="Analytics" shortcut="F1" />
                             <NavButton module="dashboard" label="Dashboard" shortcut="F2" />
                             <NavButton module="setup" label="Setup" shortcut="F3" />
