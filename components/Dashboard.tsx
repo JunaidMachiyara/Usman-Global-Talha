@@ -1,7 +1,8 @@
+
 import React, { useMemo } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { InvoiceStatus, PackingType, Module, SalesInvoice, Production, Item, InvoiceItem, OriginalPurchased } from '../types.ts';
-import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend, AreaChart, Area, CartesianGrid, XAxis, YAxis } from 'recharts';
 
 // --- SVG Icons for Dashboard ---
 const Icons = {
@@ -19,7 +20,7 @@ const Icons = {
     newProduction: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>,
     newPurchase: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>,
     combination: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 00-1 1v1a2 2 0 11-4 0v-1a1 1 0 00-1-1H7a1 1 0 01-1-1v-3a1 1 0 011-1h1a2 2 0 100-4H7a1 1 0 01-1-1V7a1 1 0 011-1h3a1 1 0 001-1V4z" /></svg>,
-    fulfillment: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>,
+    fulfillment: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>,
     planner: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" /></svg>,
 };
 
@@ -399,6 +400,39 @@ const Dashboard: React.FC<DashboardProps> = ({ setModule }) => {
         };
     }, [state]);
 
+    const revenueTrendData = useMemo(() => {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const relevantInvoices = state.salesInvoices.filter(inv =>
+            inv.status === InvoiceStatus.Posted &&
+            new Date(inv.date) >= thirtyDaysAgo
+        );
+
+        const grouped = relevantInvoices.reduce((acc, inv) => {
+            const dateObj = new Date(inv.date);
+            const key = `${dateObj.getDate()} ${dateObj.toLocaleString('default', { month: 'short' })}`;
+
+            if (!acc[key]) {
+                acc[key] = { name: key, value: 0, dateObj };
+            }
+
+            const invTotal = inv.items.reduce((sum, item) => {
+                const itemDetails = state.items.find(i => i.id === item.itemId);
+                let quantity = item.quantity;
+                if (itemDetails?.packingType === PackingType.Bales) {
+                    quantity = item.quantity * (itemDetails.baleSize || 0);
+                }
+                return sum + (quantity * (item.rate || 0) * (item.conversionRate || 1));
+            }, 0);
+
+            acc[key].value += invTotal + (inv.freightAmount || 0) * (inv.freightConversionRate || 1) + (inv.customCharges || 0) * (inv.customChargesConversionRate || 1);
+            return acc;
+        }, {} as Record<string, { name: string; value: number; dateObj: Date }>);
+
+        return Object.values(grouped).sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+    }, [state.salesInvoices, state.items]);
+
     const handleShortcutClick = (reportKey: string) => {
         setModule('reports', reportKey);
     };
@@ -444,6 +478,42 @@ const Dashboard: React.FC<DashboardProps> = ({ setModule }) => {
                         <button onClick={() => setModule('reports', 'financial/payment-planner')} className="flex items-center px-4 py-2 bg-pink-100 text-pink-800 rounded-lg font-semibold hover:bg-pink-200 transition-colors">
                             {Icons.planner} Receipts & Payments Planner
                         </button>
+                    </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-xl shadow-md">
+                    <h3 className="text-lg font-semibold mb-4 text-slate-800">Sales Revenue Trend (Last 30 Days)</h3>
+                    <div className="h-80">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={revenueTrendData}>
+                                <defs>
+                                    <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#1E40AF" stopOpacity={0.8}/>
+                                        <stop offset="95%" stopColor="#1E40AF" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                                <XAxis 
+                                    dataKey="name" 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{fill: '#6B7280', fontSize: 12}} 
+                                    dy={10}
+                                />
+                                <YAxis 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{fill: '#6B7280', fontSize: 12}} 
+                                    tickFormatter={(value) => `$${value}`} 
+                                    width={80}
+                                />
+                                <Tooltip 
+                                    contentStyle={{ backgroundColor: '#fff', border: 'none', borderRadius: '8px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
+                                    formatter={(value: number) => [`$${value.toLocaleString()}`, 'Revenue']}
+                                />
+                                <Area type="monotone" dataKey="value" stroke="#1E40AF" strokeWidth={2} fillOpacity={1} fill="url(#colorRevenue)" />
+                            </AreaChart>
+                        </ResponsiveContainer>
                     </div>
                 </div>
 

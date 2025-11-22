@@ -168,7 +168,8 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
     // Shortage Report Calculation
     const shortageData = useMemo(() => {
         return state.logisticsEntries
-            .filter(entry => entry.status === LogisticsStatus.Cleared && entry.receiveWeight !== undefined)
+            // Include 'Arrived' status so users can see variance immediately after off-loading data entry.
+            .filter(entry => (entry.status === LogisticsStatus.Cleared || entry.status === LogisticsStatus.Arrived) && entry.receiveWeight !== undefined)
             .map(entry => {
                 const purchase = purchasesWithContainersMap.get(entry.purchaseId);
                 if (!purchase) return null;
@@ -539,7 +540,7 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
                     <div>
                         <h3 className="text-lg font-bold text-slate-700 mb-4">Shortage & Excess Report</h3>
                         <p className="text-sm text-slate-600 mb-4">
-                            This report highlights cleared containers where the Received Weight differs from the Invoiced Weight.
+                            This report highlights arrived and cleared containers where the Received Weight differs from the Invoiced Weight.
                             <br/>
                             <span className="text-xs italic">* Impact Value = Difference (Kg) x Original Invoice Rate. This cost is automatically absorbed into the weighted average cost of the stock.</span>
                         </p>
@@ -579,7 +580,7 @@ const LogisticsModule: React.FC<{ userProfile: UserProfile | null }> = ({ userPr
                                         </tr>
                                     ))}
                                     {(!shortageData || shortageData.length === 0) && (
-                                        <tr><td colSpan={9} className="p-4 text-center text-slate-500">No discrepancies found in cleared containers.</td></tr>
+                                        <tr><td colSpan={9} className="p-4 text-center text-slate-500">No discrepancies found in arrived/cleared containers.</td></tr>
                                     )}
                                 </tbody>
                             </table>

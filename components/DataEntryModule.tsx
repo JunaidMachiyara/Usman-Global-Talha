@@ -713,7 +713,7 @@ const BalesOpeningForm: React.FC<{ showNotification: (msg: string, type?: 'succe
                                 <th className="p-2 font-semibold text-slate-600 text-right">Opened (Units)</th>
                                 <th className="p-2 font-semibold text-slate-600 text-right">Total Kg</th>
                                 <th className="p-2 font-semibold text-slate-600 text-right">Status</th>
-                                {userProfile?.isAdmin && <th className="p-2 font-semibold text-slate-600 text-right">Actions</th>}
+                                <th className="p-2 font-semibold text-slate-600 text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -727,17 +727,15 @@ const BalesOpeningForm: React.FC<{ showNotification: (msg: string, type?: 'succe
                                             {op.status}
                                         </span>
                                     </td>
-                                    {userProfile?.isAdmin && (
-                                        <td className="p-2 text-right">
-                                            {op.status === 'Staged' ? (
-                                                <button onClick={() => handleRemoveStaged(op.id)} className="text-red-600 hover:text-red-800 text-xs font-semibold">Remove</button>
-                                            ) : op.status === 'Posted' ? (
-                                                <button onClick={() => handleDeleteBalesOpening(op.id)} className="text-red-600 hover:text-red-800 text-xs font-semibold">Remove</button>
-                                            ) : (
-                                                <span className="text-xs text-slate-400">-</span>
-                                            )}
-                                        </td>
-                                    )}
+                                    <td className="p-2 text-right">
+                                        {op.status === 'Staged' ? (
+                                            <button onClick={() => handleRemoveStaged(op.id)} className="text-red-600 hover:text-red-800 text-xs font-semibold">Remove</button>
+                                        ) : op.status === 'Posted' && userProfile?.isAdmin ? (
+                                            <button onClick={() => handleDeleteBalesOpening(op.id)} className="text-red-600 hover:text-red-800 text-xs font-semibold">Remove</button>
+                                        ) : (
+                                            <span className="text-xs text-slate-400">-</span>
+                                        )}
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>
@@ -1749,11 +1747,11 @@ const OffloadingForm: React.FC<{ showNotification: (msg: string, type?: 'success
 
     const handleFinalize = () => {
         if (!selectedLogisticsId) {
-            showNotification("Please select a container.", 'error');
+            showNotification("Please select a container to off-load.", 'error');
             return;
         }
         if (!warehouseId) {
-            showNotification("Please select a warehouse.", 'error');
+            showNotification("Validation Error: Please select a destination warehouse for the off-loaded items.", 'error');
             return;
         }
 

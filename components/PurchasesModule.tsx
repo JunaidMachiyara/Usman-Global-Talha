@@ -5,7 +5,7 @@ import {
     OriginalPurchased, FinishedGoodsPurchase, FinishedGoodsPurchaseItem, Supplier, OriginalType, 
     Item, PackingType, Currency, JournalEntry, JournalEntryType, AppState, UserProfile 
 } from '../types.ts';
-import { generateFinishedGoodsPurchaseId } from '../utils/idGenerator.ts';
+import { generateFinishedGoodsPurchaseId, generateOriginalPurchaseId } from '../utils/idGenerator.ts';
 import ItemSelector from './ui/ItemSelector.tsx';
 import CurrencyInput from './ui/CurrencyInput.tsx';
 import Modal from './ui/Modal.tsx';
@@ -201,8 +201,15 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
     const handlePrepareSummary = (e: React.FormEvent) => {
         e.preventDefault();
 
+        const supplier = state.suppliers.find(s => s.id === formData.supplierId);
+        const generatedId = generateOriginalPurchaseId(
+            state.nextOriginalPurchaseNumber, 
+            formData.date!, 
+            supplier?.name || 'Unknown'
+        );
+
         const fullPurchaseData: OriginalPurchased = {
-            id: `pur_orig_${Date.now()}`,
+            id: generatedId,
             ...getInitialState(),
             ...formData,
             quantityPurchased: Number(formData.quantityPurchased) || 0,
@@ -484,6 +491,7 @@ const PrintablePurchaseVoucher: React.FC<{ purchase: OriginalPurchased, state: A
         <div id="purchase-voucher-content" className="p-4 bg-white font-sans text-sm">
             <h2 className="text-xl font-bold text-center text-slate-900">Purchase Voucher</h2>
             <div className="grid grid-cols-2 gap-x-8 gap-y-1 mt-4 border-b pb-2 text-slate-700">
+                <p><strong>ID:</strong> {purchase.id}</p>
                 <p><strong>Date:</strong> {date}</p>
                 <p><strong>Supplier:</strong> {supplier?.name} {subSupplier ? `(${subSupplier.name})` : ''}</p>
                 <p><strong>Batch No:</strong> {purchase.batchNumber}</p>

@@ -220,8 +220,9 @@ const getInitialState = (): AppState => {
         testEntries: [],
 
         // Reset all counters to their initial values
-        nextInvoiceNumber: 1,
+        nextInvoiceNumber: 1001,
         nextOngoingOrderNumber: 1,
+        nextOriginalPurchaseNumber: 1001,
         nextFinishedGoodsPurchaseNumber: 1,
         nextPackingMaterialPurchaseNumber: 1,
         nextLogisticsSNo: 1,
@@ -247,7 +248,7 @@ const getInitialState = (): AppState => {
 
 const initialState = processState(getInitialState());
 
-type EntityName = keyof Omit<AppState, 'nextInvoiceNumber' | 'nextOngoingOrderNumber' | 'nextFinishedGoodsPurchaseNumber' | 'nextReceiptVoucherNumber' | 'nextPaymentVoucherNumber' | 'nextExpenseVoucherNumber' | 'nextJournalVoucherNumber' | 'nextLogisticsSNo' | 'favoriteCombinations' | 'nextHRTaskId' | 'nextHREnquiryId' | 'plannerData' | 'plannerLastWeeklyReset' | 'plannerLastMonthlyReset' | 'nextTestEntryNumber' | 'plannerCustomerIds' | 'plannerSupplierIds' | 'plannerExpenseAccountIds' | 'nextPackingMaterialPurchaseNumber' | 'nextGuaranteeChequeSNo'>;
+type EntityName = keyof Omit<AppState, 'nextInvoiceNumber' | 'nextOngoingOrderNumber' | 'nextOriginalPurchaseNumber' | 'nextFinishedGoodsPurchaseNumber' | 'nextReceiptVoucherNumber' | 'nextPaymentVoucherNumber' | 'nextExpenseVoucherNumber' | 'nextJournalVoucherNumber' | 'nextLogisticsSNo' | 'favoriteCombinations' | 'nextHRTaskId' | 'nextHREnquiryId' | 'plannerData' | 'plannerLastWeeklyReset' | 'plannerLastMonthlyReset' | 'nextTestEntryNumber' | 'plannerCustomerIds' | 'plannerSupplierIds' | 'plannerExpenseAccountIds' | 'nextPackingMaterialPurchaseNumber' | 'nextGuaranteeChequeSNo'>;
 type Entity = AppState[EntityName][0];
 
 type AddAction = { type: 'ADD_ENTITY'; payload: { entity: EntityName; data: Entity }; };
@@ -304,8 +305,9 @@ const dataReducer = (state: AppState, action: Action): AppState => {
                 depreciationEntries: [],
                 
                 // Counters - reset them
-                nextInvoiceNumber: 1,
+                nextInvoiceNumber: 1001,
                 nextOngoingOrderNumber: 1,
+                nextOriginalPurchaseNumber: 1001,
                 nextFinishedGoodsPurchaseNumber: 1,
                 nextPackingMaterialPurchaseNumber: 1,
                 nextLogisticsSNo: 1,
@@ -334,6 +336,7 @@ const dataReducer = (state: AppState, action: Action): AppState => {
             const newState = { ...state, [entity]: [...entityArray, data] };
             if (entity === 'salesInvoices') newState.nextInvoiceNumber = state.nextInvoiceNumber + 1;
             if (entity === 'ongoingOrders') newState.nextOngoingOrderNumber = state.nextOngoingOrderNumber + 1;
+            if (entity === 'originalPurchases') newState.nextOriginalPurchaseNumber = state.nextOriginalPurchaseNumber + 1;
             if (entity === 'finishedGoodsPurchases') newState.nextFinishedGoodsPurchaseNumber = state.nextFinishedGoodsPurchaseNumber + 1;
             if (entity === 'packingMaterialPurchases') newState.nextPackingMaterialPurchaseNumber = state.nextPackingMaterialPurchaseNumber + 1;
             if (entity === 'logisticsEntries') newState.nextLogisticsSNo = state.nextLogisticsSNo + 1;
@@ -436,6 +439,7 @@ const dataReducer = (state: AppState, action: Action): AppState => {
                     
                     nextInvoiceNumber: firestoreState.nextInvoiceNumber ?? defaultState.nextInvoiceNumber,
                     nextOngoingOrderNumber: firestoreState.nextOngoingOrderNumber ?? defaultState.nextOngoingOrderNumber,
+                    nextOriginalPurchaseNumber: firestoreState.nextOriginalPurchaseNumber ?? defaultState.nextOriginalPurchaseNumber,
                     nextFinishedGoodsPurchaseNumber: firestoreState.nextFinishedGoodsPurchaseNumber ?? defaultState.nextFinishedGoodsPurchaseNumber,
                     nextPackingMaterialPurchaseNumber: firestoreState.nextPackingMaterialPurchaseNumber ?? defaultState.nextPackingMaterialPurchaseNumber,
                     nextLogisticsSNo: firestoreState.nextLogisticsSNo ?? defaultState.nextLogisticsSNo,

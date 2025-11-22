@@ -46,11 +46,11 @@ export const generateCustomsDocumentId = (items: CustomsDocument[]): string => g
 
 export const generateInvoiceId = (sequentialNumber: number): string => {
   const date = new Date();
-  const dd = String(date.getDate()).padStart(2, '0');
   const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
   const yy = String(date.getFullYear()).slice(-2);
   
-  return `SI${sequentialNumber}_${dd}_${mm}_${yy}`;
+  return `S${sequentialNumber}-${mm}${dd}${yy}`;
 };
 
 export const generateOngoingOrderId = (sequentialNumber: number): string => {
@@ -78,4 +78,15 @@ export const generatePackingMaterialPurchaseId = (sequentialNumber: number): str
   const yy = String(date.getFullYear()).slice(-2);
   
   return `PMP${sequentialNumber}_${dd}_${mm}_${yy}`;
+};
+
+export const generateOriginalPurchaseId = (sequentialNumber: number, dateStr: string, supplierName: string): string => {
+  const d = new Date(dateStr);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  const datePart = `${mm}${dd}${yy}`;
+  const supplierPart = supplierName.replace(/\s+/g, '').replace(/[^a-zA-Z0-9-]/g, ''); 
+  
+  return `P${sequentialNumber}-${datePart}-${supplierPart}`;
 };

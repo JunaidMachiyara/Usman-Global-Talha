@@ -655,6 +655,7 @@ export interface AppState {
     favoriteCombinations: FavoriteCombination[];
     nextInvoiceNumber: number;
     nextOngoingOrderNumber: number;
+    nextOriginalPurchaseNumber: number;
     nextFinishedGoodsPurchaseNumber: number;
     nextPackingMaterialPurchaseNumber: number;
     nextLogisticsSNo: number;

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useMemo, useReducer } from 'react';
 import SetupModule, { HRModule } from './components/SetupModule.tsx';
 import DataEntryModule from './components/DataEntryModule.tsx';
@@ -262,8 +263,8 @@ const App: React.FC = () => {
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false); // Mobile Menu State
 
     const [navigationHistory, setNavigationHistory] = useState<Array<{ module: Module; subView: string | null }>>([]);
-    const prevModuleRef = useRef<Module>();
-    const prevSubViewRef = useRef<string | null>();
+    const prevModuleRef = useRef<Module | undefined>(undefined);
+    const prevSubViewRef = useRef<string | null | undefined>(undefined);
     const isNavigatingBackRef = useRef(false);
     const [showEscapeConfirm, setShowEscapeConfirm] = useState(false);
     const escapeConfirmTimeoutRef = useRef<number | null>(null);
@@ -365,7 +366,7 @@ const App: React.FC = () => {
         if (isNavigatingBackRef.current) {
             isNavigatingBackRef.current = false;
         } else if (prevModuleRef.current) {
-            const prevState = { module: prevModuleRef.current, subView: prevSubViewRef.current };
+            const prevState = { module: prevModuleRef.current, subView: prevSubViewRef.current || null };
             setNavigationHistory(prev => [...prev, prevState]);
         }
         prevModuleRef.current = activeModule;
@@ -586,8 +587,8 @@ const App: React.FC = () => {
                         <img src="https://uxwing.com/wp-content/themes/uxwing/download/location-travel-map/globe-icon.png" alt="Usman Global Logo" className="h-10 w-10" />
                         <h1 className="text-xl md:text-2xl font-bold tracking-tight truncate max-w-[200px] md:max-w-none">Usman Global</h1>
                     </div>
-                    <div className="flex items-center space-x-4">
-                        <nav className="hidden lg:flex space-x-1 bg-blue-800 p-1 rounded-lg overflow-x-auto no-scrollbar">
+                    <div className="flex items-center space-x-4 flex-1 justify-end min-w-0"> 
+                        <nav className="hidden lg:flex space-x-1 bg-blue-800 p-1 rounded-lg overflow-x-auto no-scrollbar max-w-[700px] xl:max-w-none">
                             <NavButton module="analytics" label="Analytics" shortcut="F1" />
                             <NavButton module="dashboard" label="Dashboard" shortcut="F2" />
                             <NavButton module="setup" label="Setup" shortcut="F3" />
@@ -601,7 +602,7 @@ const App: React.FC = () => {
                             <NavButton module="admin" label="Admin" shortcut="F11" />
                             <NavButton module="chat" label="Chat" shortcut="F12" unreadCount={unreadMessageCount} />
                         </nav>
-                        <div className="flex items-center space-x-3 border-l border-blue-500 pl-4">
+                        <div className="flex items-center space-x-3 border-l border-blue-500 pl-4 flex-shrink-0">
                             <div className="w-36 text-right hidden md:block">
                                 {saveStatus === 'saving' && <span className="text-xs text-yellow-300 animate-pulse flex items-center justify-end">Saving...</span>}
                                 {saveStatus === 'synced' && (

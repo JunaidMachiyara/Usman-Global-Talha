@@ -358,8 +358,10 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
     // New state for date-specific deletions
     const [productionDeleteDate, setProductionDeleteDate] = useState('');
     const [salesDeleteDate, setSalesDeleteDate] = useState('');
+    const [purchaseDeleteDate, setPurchaseDeleteDate] = useState('');
     const [isDeleteProductionConfirmOpen, setIsDeleteProductionConfirmOpen] = useState(false);
     const [isDeleteSalesConfirmOpen, setIsDeleteSalesConfirmOpen] = useState(false);
+    const [isDeletePurchaseConfirmOpen, setIsDeletePurchaseConfirmOpen] = useState(false);
 
     const executePriceCorrection = () => {
         const batchUpdates: any[] = [];
@@ -556,6 +558,51 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
         setIsDeleteSalesConfirmOpen(false);
     };
 
+    const executeDeletePurchaseByDate = () => {
+        if (!purchaseDeleteDate) return;
+
+        const originalPurchasesToDelete = state.originalPurchases.filter(p => p.date === purchaseDeleteDate);
+        const finishedGoodsPurchasesToDelete = state.finishedGoodsPurchases.filter(p => p.date === purchaseDeleteDate);
+        
+        const batchActions: any[] = [];
+
+        // 1. Process Original Purchases
+        originalPurchasesToDelete.forEach(p => {
+            batchActions.push({ type: 'DELETE_ENTITY', payload: { entity: 'originalPurchases', id: p.id } });
+            
+            // Find associated Journal Entries (Voucher ID format from PurchasesModule: `JV-${purchaseToSave.id}`)
+            const associatedJEs = state.journalEntries.filter(je => je.voucherId === `JV-${p.id}`);
+            associatedJEs.forEach(je => {
+                batchActions.push({ type: 'DELETE_ENTITY', payload: { entity: 'journalEntries', id: je.id } });
+            });
+        });
+
+        // 2. Process Finished Goods Purchases
+        finishedGoodsPurchasesToDelete.forEach(p => {
+            batchActions.push({ type: 'DELETE_ENTITY', payload: { entity: 'finishedGoodsPurchases', id: p.id } });
+
+            // Find associated Productions (ID format: `prod_fgp_${purchaseToSave.id}_${item.itemId}`)
+            const associatedProductions = state.productions.filter(prod => prod.id.startsWith(`prod_fgp_${p.id}_`));
+            associatedProductions.forEach(prod => {
+                batchActions.push({ type: 'DELETE_ENTITY', payload: { entity: 'productions', id: prod.id } });
+            });
+
+            // Find associated Journal Entries (Voucher ID format: `JV-FGP-${purchaseToSave.id}`)
+            const associatedJEs = state.journalEntries.filter(je => je.voucherId === `JV-FGP-${p.id}`);
+            associatedJEs.forEach(je => {
+                batchActions.push({ type: 'DELETE_ENTITY', payload: { entity: 'journalEntries', id: je.id } });
+            });
+        });
+
+        if (batchActions.length > 0) {
+            dispatch({ type: 'BATCH_UPDATE', payload: batchActions });
+            setNotification({ msg: `Successfully deleted ${originalPurchasesToDelete.length + finishedGoodsPurchasesToDelete.length} purchase records and related entries for ${purchaseDeleteDate}.`, type: 'success' });
+        } else {
+            setNotification({ msg: `No purchase records found for ${purchaseDeleteDate}.`, type: 'error' });
+        }
+        setIsDeletePurchaseConfirmOpen(false);
+    };
+
 
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
@@ -569,7 +616,7 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
             
              <div className="border-t pt-4">
                 <h3 className="text-lg font-semibold text-slate-800 mb-3">Date-Specific Data Deletion</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     {/* Production Deletion */}
                     <div className="p-4 border rounded-md bg-slate-50">
                          <label className="block text-sm font-medium text-slate-700 mb-1">Delete Production Data</label>
@@ -614,6 +661,29 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
                             </button>
                          </div>
                          <p className="text-xs text-slate-500 mt-1">Deletes all invoices and related journal entries for the selected date.</p>
+                    </div>
+
+                    {/* Purchase Deletion */}
+                    <div className="p-4 border rounded-md bg-slate-50">
+                         <label className="block text-sm font-medium text-slate-700 mb-1">Delete Purchase Data</label>
+                         <div className="flex gap-2">
+                             <input 
+                                type="date" 
+                                value={purchaseDeleteDate} 
+                                onChange={(e) => setPurchaseDeleteDate(e.target.value)} 
+                                className="flex-grow p-2 border border-slate-300 rounded-md text-sm"
+                            />
+                            <button
+                                onClick={() => {
+                                    if (purchaseDeleteDate) setIsDeletePurchaseConfirmOpen(true);
+                                    else setNotification({ msg: "Please select a date first.", type: "error" });
+                                }}
+                                className="px-3 py-2 bg-red-600 text-white font-semibold rounded-md hover:bg-red-700 transition-colors text-sm"
+                            >
+                                Delete
+                            </button>
+                         </div>
+                         <p className="text-xs text-slate-500 mt-1">Deletes Original & Finished Goods Purchases and related entries.</p>
                     </div>
                 </div>
             </div>
@@ -826,6 +896,33 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
                                 Cancel
                             </button>
                             <button onClick={executeDeleteSalesByDate} className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">
+                                Yes, Delete
+                            </button>
+                        </div>
+                    </div>
+                </Modal>
+            )}
+
+            {isDeletePurchaseConfirmOpen && (
+                <Modal
+                    isOpen={isDeletePurchaseConfirmOpen}
+                    onClose={() => setIsDeletePurchaseConfirmOpen(false)}
+                    title={`Confirm Delete Purchase Data`}
+                    size="lg"
+                >
+                    <div className="space-y-4">
+                        <p className="font-bold text-red-600">WARNING: This action cannot be undone.</p>
+                        <p className="text-slate-700">
+                            You are about to delete <strong>ALL</strong> purchase invoices (Original & Finished Goods) and their associated journal entries/production records for date: <strong>{purchaseDeleteDate}</strong>.
+                        </p>
+                         <p className="text-slate-700">
+                             Found: <strong>{state.originalPurchases.filter(p => p.date === purchaseDeleteDate).length + state.finishedGoodsPurchases.filter(p => p.date === purchaseDeleteDate).length}</strong> purchases.
+                        </p>
+                        <div className="flex justify-end gap-3 pt-4 border-t">
+                            <button onClick={() => setIsDeletePurchaseConfirmOpen(false)} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300">
+                                Cancel
+                            </button>
+                            <button onClick={executeDeletePurchaseByDate} className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">
                                 Yes, Delete
                             </button>
                         </div>
