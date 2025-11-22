@@ -4,6 +4,7 @@ import ReportToolbar from './ReportToolbar.tsx';
 import { OriginalPurchased, PackingType, Currency, Production, Item } from '../../types.ts';
 import Modal from '../ui/Modal.tsx';
 
+// ... ModalDrilldownItem interface ...
 interface ModalDrilldownItem {
     id: string;
     name: string;
@@ -14,10 +15,10 @@ interface ModalDrilldownItem {
     percentage: number;
 }
 
-
 const OriginalCombinationReport: React.FC = () => {
     const { state } = useData();
 
+    // ... filters and state ...
     const [filters, setFilters] = useState({
         startDate: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0],
         endDate: new Date().toISOString().split('T')[0],
@@ -60,6 +61,7 @@ const OriginalCombinationReport: React.FC = () => {
         const avgCostPerKg: { [originalTypeId: string]: number } = {};
         const costMap: { [originalTypeId: string]: { totalKg: number; totalCost: number } } = {};
         state.originalPurchases.forEach((p: OriginalPurchased) => {
+             // ... (existing logic is fine for raw materials) ...
             const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
             if (!originalType) return;
 
@@ -90,14 +92,13 @@ const OriginalCombinationReport: React.FC = () => {
                 avgCostPerKg[typeId] = costMap[typeId].totalCost / costMap[typeId].totalKg;
             }
         }
-
-        // --- 1. Originals Opened ---
+        // ... (Original Opened logic is fine) ...
         const openingsInPeriod = state.originalOpenings.filter(o => o.date >= filters.startDate && o.date <= filters.endDate);
         const totalOpenedKg = openingsInPeriod.reduce((sum, o) => sum + o.totalKg, 0);
 
         const openedOriginalsAggregated: { [key: string]: { name: string; totalKg: number; totalWorth: number; avgPricePerKg: number; } } = {};
         openingsInPeriod.forEach(opening => {
-            const originalType = state.originalTypes.find(ot => ot.id === opening.originalTypeId);
+             const originalType = state.originalTypes.find(ot => ot.id === opening.originalTypeId);
             if (originalType) {
                 if (!openedOriginalsAggregated[originalType.id]) {
                     openedOriginalsAggregated[originalType.id] = { name: originalType.name, totalKg: 0, totalWorth: 0, avgPricePerKg: avgCostPerKg[originalType.id] || 0 };
@@ -114,7 +115,7 @@ const OriginalCombinationReport: React.FC = () => {
         const totalOpenedWorth = openedOriginals.reduce((sum, o) => sum + o.totalWorth, 0);
 
 
-        // --- 2. Finished Goods Produced ---
+        // --- 2. Finished Goods Produced (UPDATED LOGIC) ---
         const producedByCategoryAgg: { [key: string]: { name: string; totalKg: number; totalPWorth: number; totalSWorth: number } } = {};
         const producedBySectionAgg: { [key: string]: { name: string; totalKg: number; totalPWorth: number; totalSWorth: number } } = {};
         let totalProducedKg = 0;
@@ -125,8 +126,10 @@ const OriginalCombinationReport: React.FC = () => {
                 const producedKg = prod.quantityProduced * (item.packingType !== PackingType.Kg ? item.baleSize : 1);
                 totalProducedKg += producedKg;
 
-                const productionWorth = producedKg * item.avgProductionPrice;
-                const salesWorth = producedKg * item.avgSalesPrice;
+                // UPDATED: For Bales/Sacks, price is per Unit. For Kg, price is per Kg.
+                // Qty * Unit Price (Bales) OR Qty * Kg Price (Kg)
+                const productionWorth = prod.quantityProduced * item.avgProductionPrice;
+                const salesWorth = prod.quantityProduced * item.avgSalesPrice;
 
                 // By Category
                 const category = state.categories.find(c => c.id === item.categoryId);
@@ -192,6 +195,7 @@ const OriginalCombinationReport: React.FC = () => {
 
     }, [filters, workingCostRate, state, productionsInPeriod]);
 
+    // ... (rest of the component UI remains the same, logic changes were confined to useMemo) ...
     const handleCategoryClick = (categoryName: string) => {
         const rawItems = productionsInPeriod
             .map(p => { const item = state.items.find(i => i.id === p.itemId); return { production: p, item }; })
@@ -210,7 +214,8 @@ const OriginalCombinationReport: React.FC = () => {
         const items: ModalDrilldownItem[] = rawItems.map(({ production, item }) => {
             const totalKg = production.quantityProduced * (item!.packingType !== PackingType.Kg ? item!.baleSize : 1);
             const priceToUse = filters.priceType === 'sales' ? item!.avgSalesPrice : item!.avgProductionPrice;
-            const totalWorth = totalKg * priceToUse;
+            // UPDATED: Worth = Qty * Unit Price
+            const totalWorth = production.quantityProduced * priceToUse;
             const percentage = totalKgForCategory > 0 ? (totalKg / totalKgForCategory) * 100 : 0;
             return { id: item!.id, name: item!.name, quantity: production.quantityProduced, totalKg, avgPricePerKg: priceToUse, totalWorth, percentage };
         });
@@ -238,7 +243,8 @@ const OriginalCombinationReport: React.FC = () => {
             const production = data.production;
             const totalKg = production.quantityProduced * (item.packingType !== PackingType.Kg ? item.baleSize : 1);
             const priceToUse = filters.priceType === 'sales' ? item.avgSalesPrice : item.avgProductionPrice;
-            const totalWorth = totalKg * priceToUse;
+            // UPDATED: Worth = Qty * Unit Price
+            const totalWorth = production.quantityProduced * priceToUse;
             const percentage = totalKgForSection > 0 ? (totalKg / totalKgForSection) * 100 : 0;
             return { id: item.id, name: item.name, quantity: production.quantityProduced, totalKg, avgPricePerKg: priceToUse, totalWorth, percentage };
         });
@@ -250,6 +256,7 @@ const OriginalCombinationReport: React.FC = () => {
     const formatCurrency = (val: number) => val.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     
     return (
+        // ... (UI Return remains the same) ...
         <div className="report-print-area">
             <ReportToolbar
                 title="Original Combination Report"
@@ -363,9 +370,9 @@ const OriginalCombinationReport: React.FC = () => {
                                     <tr className="bg-slate-100">
                                         <th className="p-2 font-semibold text-slate-600">Category</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right">Total Kg</th>
-                                        <th className="p-2 font-semibold text-slate-600 text-right bg-blue-50">Avg P/Price/Kg</th>
+                                        <th className="p-2 font-semibold text-slate-600 text-right bg-blue-50">Avg P/Price</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right bg-blue-50">Total P/Worth</th>
-                                        <th className="p-2 font-semibold text-slate-600 text-right bg-green-50">Avg S/Price/Kg</th>
+                                        <th className="p-2 font-semibold text-slate-600 text-right bg-green-50">Avg S/Price</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right bg-green-50">Total S/Worth</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right">%</th>
                                     </tr>
@@ -411,9 +418,9 @@ const OriginalCombinationReport: React.FC = () => {
                                     <tr className="bg-slate-100">
                                         <th className="p-2 font-semibold text-slate-600">Section</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right">Total Kg</th>
-                                        <th className="p-2 font-semibold text-slate-600 text-right bg-blue-50">Avg P/Price/Kg</th>
+                                        <th className="p-2 font-semibold text-slate-600 text-right bg-blue-50">Avg P/Price</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right bg-blue-50">Total P/Worth</th>
-                                        <th className="p-2 font-semibold text-slate-600 text-right bg-green-50">Avg S/Price/Kg</th>
+                                        <th className="p-2 font-semibold text-slate-600 text-right bg-green-50">Avg S/Price</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right bg-green-50">Total S/Worth</th>
                                         <th className="p-2 font-semibold text-slate-600 text-right">%</th>
                                     </tr>
@@ -465,7 +472,7 @@ const OriginalCombinationReport: React.FC = () => {
                                     <th className="p-2 font-semibold text-slate-600">Item Name</th>
                                     <th className="p-2 font-semibold text-slate-600 text-right">Qty</th>
                                     <th className="p-2 font-semibold text-slate-600 text-right">Total Kg</th>
-                                    <th className="p-2 font-semibold text-slate-600 text-right">Avg Price/Kg</th>
+                                    <th className="p-2 font-semibold text-slate-600 text-right">Avg Price</th>
                                     <th className="p-2 font-semibold text-slate-600 text-right">Total Worth</th>
                                     <th className="p-2 font-semibold text-slate-600 text-right">%</th>
                                 </tr>

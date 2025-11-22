@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useData, auth, db, allPermissions, dataEntrySubModules, mainModules } from '../context/DataContext.tsx';
-import { Module, UserProfile, AppState, PackingType, Production, JournalEntry, SalesInvoice, InvoiceItem, Currency } from '../types.ts';
+import { Module, UserProfile, AppState, PackingType, Production, JournalEntry, SalesInvoice, InvoiceItem, Currency, OriginalPurchased } from '../types.ts';
 import { reportStructure } from './ReportsModule.tsx';
 import Modal from './ui/Modal.tsx';
+import EntitySelector from './ui/EntitySelector.tsx';
+
+// ... (UserManager, UserEditModal, PurchaseRateCorrector, ManualEditManager, EditModal remain unchanged) ...
 
 const UserManager: React.FC<{ setNotification: (n: any) => void; }> = ({ setNotification }) => {
     const [users, setUsers] = useState<UserProfile[]>([]);
@@ -127,6 +130,172 @@ const UserEditModal: React.FC<{ user: Partial<UserProfile> & { password?: string
                  <div className="flex justify-end gap-2 pt-4"><button onClick={onClose} className="px-4 py-2 bg-slate-200 rounded-md">Cancel</button><button onClick={onSave} className="px-4 py-2 bg-blue-600 text-white rounded-md">Save</button></div>
             </div>
         </Modal>
+    );
+};
+
+const PurchaseRateCorrector: React.FC<{ setNotification: (n: any) => void }> = ({ setNotification }) => {
+    const { state, dispatch } = useData();
+    const [supplierId, setSupplierId] = useState('');
+    const [selectedPurchaseId, setSelectedPurchaseId] = useState('');
+    const [actualTotalAmount, setActualTotalAmount] = useState('');
+    
+    const supplierPurchases = useMemo(() => {
+        if (!supplierId) return [];
+        return state.originalPurchases
+            .filter(p => p.supplierId === supplierId)
+            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }, [supplierId, state.originalPurchases]);
+
+    const selectedPurchase = useMemo(() => {
+        return supplierPurchases.find(p => p.id === selectedPurchaseId);
+    }, [selectedPurchaseId, supplierPurchases]);
+
+    const currentCalculatedTotal = useMemo(() => {
+        if (!selectedPurchase) return 0;
+        // quantityPurchased * rate gives the foreign currency amount
+        return selectedPurchase.quantityPurchased * selectedPurchase.rate;
+    }, [selectedPurchase]);
+
+    const handleCorrectRate = () => {
+        if (!selectedPurchase || !actualTotalAmount) return;
+        const newTotal = Number(actualTotalAmount);
+        if (newTotal <= 0) {
+            setNotification({ msg: "Please enter a valid positive total amount.", type: 'error' });
+            return;
+        }
+        
+        if (selectedPurchase.quantityPurchased === 0) {
+             setNotification({ msg: "Quantity is 0, cannot calculate rate.", type: 'error' });
+             return;
+        }
+
+        // Calculate high precision rate
+        const newRate = newTotal / selectedPurchase.quantityPurchased;
+
+        const batchActions: any[] = [];
+
+        // 1. Update Purchase Record
+        batchActions.push({
+            type: 'UPDATE_ENTITY',
+            payload: {
+                entity: 'originalPurchases',
+                data: { id: selectedPurchase.id, rate: newRate }
+            }
+        });
+
+        // 2. Find and Update Journal Entries (Voucher ID is usually JV-{purchaseId})
+        const voucherId = `JV-${selectedPurchase.id}`;
+        const relatedJEs = state.journalEntries.filter(je => je.voucherId === voucherId);
+        
+        // New USD Amount 
+        const newAmountUSD = (newTotal * (selectedPurchase.conversionRate || 1)) + (selectedPurchase.discountSurcharge || 0);
+
+        relatedJEs.forEach(je => {
+            // Identify if this JE line corresponds to the main purchase amount
+            // Either Expense Debit or AP Credit
+            const isAP = je.account === 'AP-001' && je.entityId === selectedPurchase.supplierId;
+            const isExp = je.account === 'EXP-004'; // Raw Material Purchase Expense
+
+            if (isAP || isExp) {
+                const updatedJE = { ...je };
+                if (je.debit > 0) updatedJE.debit = newAmountUSD;
+                if (je.credit > 0) updatedJE.credit = newAmountUSD;
+                
+                // Also update original amount metadata if exists
+                if (updatedJE.originalAmount) {
+                    updatedJE.originalAmount = { ...updatedJE.originalAmount, amount: newTotal };
+                }
+
+                batchActions.push({
+                    type: 'UPDATE_ENTITY',
+                    payload: { entity: 'journalEntries', data: updatedJE }
+                });
+            }
+        });
+
+        if (batchActions.length > 0) {
+            dispatch({ type: 'BATCH_UPDATE', payload: batchActions });
+            setNotification({ msg: `Updated Rate to ${newRate.toFixed(10)} and corrected ${relatedJEs.length} Journal Entries.`, type: 'success' });
+            setActualTotalAmount('');
+        } else {
+            setNotification({ msg: "Could not find records to update.", type: 'error' });
+        }
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md border border-orange-200 mt-6">
+            <h2 className="text-2xl font-bold text-orange-700 mb-2">Original Stock Rate Corrector</h2>
+            <p className="text-sm text-slate-600 mb-4">
+                Use this tool to fix "2 decimal" rounding errors. Enter the <strong>Actual Total Invoice Amount</strong>, and the system will recalculate the rate with high precision (up to 10 decimals) and update the accounting journal.
+            </p>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label className="block text-sm font-medium text-slate-700">Select Supplier</label>
+                    <EntitySelector
+                        entities={state.suppliers}
+                        selectedEntityId={supplierId}
+                        onSelect={(id) => { setSupplierId(id); setSelectedPurchaseId(''); }}
+                        placeholder="Search Supplier..."
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-slate-700">Select Purchase Batch</label>
+                    <select 
+                        value={selectedPurchaseId} 
+                        onChange={e => setSelectedPurchaseId(e.target.value)}
+                        className="w-full p-2 border border-slate-300 rounded-md"
+                        disabled={!supplierId}
+                    >
+                        <option value="">Select Purchase...</option>
+                        {supplierPurchases.map(p => (
+                            <option key={p.id} value={p.id}>
+                                {p.date} - Batch: {p.batchNumber} ({p.quantityPurchased.toLocaleString()} units)
+                            </option>
+                        ))}
+                    </select>
+                </div>
+            </div>
+
+            {selectedPurchase && (
+                <div className="p-4 bg-slate-50 rounded-lg border">
+                    <div className="grid grid-cols-3 gap-4 text-sm mb-4">
+                        <div>
+                            <span className="block text-slate-500">Current Rate</span>
+                            <span className="font-mono font-bold">{selectedPurchase.rate.toFixed(6)}</span>
+                        </div>
+                        <div>
+                            <span className="block text-slate-500">System Calculated Total</span>
+                            <span className="font-mono font-bold text-red-600">{currentCalculatedTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        </div>
+                        <div>
+                            <span className="block text-slate-500">Currency</span>
+                            <span className="font-bold">{selectedPurchase.currency}</span>
+                        </div>
+                    </div>
+
+                    <div className="flex items-end gap-4">
+                        <div className="flex-grow">
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Actual Total Invoice Amount</label>
+                            <input 
+                                type="number" 
+                                step="0.01"
+                                value={actualTotalAmount}
+                                onChange={e => setActualTotalAmount(e.target.value)}
+                                className="w-full p-2 border border-blue-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                                placeholder="e.g., 33333.33"
+                            />
+                        </div>
+                        <button 
+                            onClick={handleCorrectRate}
+                            className="px-4 py-2 bg-orange-600 text-white font-semibold rounded-md hover:bg-orange-700"
+                        >
+                            Correct Rate & Fix Ledger
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 };
 
@@ -347,6 +516,312 @@ const EditModal: React.FC<EditModalProps> = ({ isOpen, onClose, document, onSave
     );
 };
 
+const ItemPriceAuditorModal: React.FC<{ isOpen: boolean; onClose: () => void; state: AppState }> = ({ isOpen, onClose, state }) => {
+    if (!isOpen) return null;
+
+    const handleDownloadCsv = () => {
+        const headers = ['ID', 'Name', 'Category', 'Packing Type', 'Packing Size', 'Avg Prod Price', 'Avg Sales Price'];
+        const csvRows = [headers.join(',')];
+
+        state.items.forEach(item => {
+            const categoryName = state.categories.find(c => c.id === item.categoryId)?.name || 'N/A';
+            const row = [
+                item.id,
+                `"${item.name.replace(/"/g, '""')}"`, // Escape quotes
+                `"${categoryName.replace(/"/g, '""')}"`,
+                item.packingType,
+                item.packingType !== 'Kg' ? item.baleSize : 1,
+                item.avgProductionPrice.toFixed(4), // Show high precision
+                item.avgSalesPrice.toFixed(4)
+            ];
+            csvRows.push(row.join(','));
+        });
+
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Item_Price_Audit_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+    };
+
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} title="Item Price Auditor" size="4xl">
+            <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                    <p className="text-sm text-slate-600">Verify your item prices here. Prices should now reflect per-unit rates if you ran the conversion tool.</p>
+                    <button 
+                        onClick={handleDownloadCsv}
+                        className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-semibold flex items-center gap-2"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        Download List
+                    </button>
+                </div>
+                <div className="overflow-x-auto max-h-[60vh] border rounded-md">
+                    <table className="w-full text-left table-auto text-sm">
+                        <thead className="bg-slate-100 sticky top-0 z-10">
+                            <tr>
+                                <th className="p-2 font-semibold border-b">ID</th>
+                                <th className="p-2 font-semibold border-b">Name</th>
+                                <th className="p-2 font-semibold border-b">Type</th>
+                                <th className="p-2 font-semibold border-b text-right">Size</th>
+                                <th className="p-2 font-semibold border-b text-right">Avg Prod Price</th>
+                                <th className="p-2 font-semibold border-b text-right">Avg Sales Price</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {state.items.map(item => (
+                                <tr key={item.id} className="border-b hover:bg-slate-50">
+                                    <td className="p-2 font-mono text-xs">{item.id}</td>
+                                    <td className="p-2">{item.name}</td>
+                                    <td className="p-2">{item.packingType}</td>
+                                    <td className="p-2 text-right">{item.packingType !== 'Kg' ? item.baleSize : '-'}</td>
+                                    <td className="p-2 text-right font-mono">{item.avgProductionPrice.toFixed(4)}</td>
+                                    <td className="p-2 text-right font-mono">{item.avgSalesPrice.toFixed(4)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                 <div className="flex justify-end">
+                    <button onClick={onClose} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md">Close</button>
+                </div>
+            </div>
+        </Modal>
+    );
+};
+
+const BulkPriceUpdateModal: React.FC<{ isOpen: boolean; onClose: () => void; setNotification: (n: any) => void }> = ({ isOpen, onClose, setNotification }) => {
+    const { state, dispatch } = useData();
+    const [parsedData, setParsedData] = useState<{ validUpdates: any[], errors: any[] } | null>(null);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const uploadedFile = e.target.files?.[0];
+        if (!uploadedFile) return;
+        setIsProcessing(true);
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const text = event.target?.result as string;
+            const rows = text.split(/\r\n|\n/).filter(row => row.trim() !== '');
+            
+            // Parse Header
+            const headerRow = rows.shift();
+            if (!headerRow) {
+                 setNotification({ msg: "File is empty.", type: 'error' });
+                 setIsProcessing(false);
+                 return;
+            }
+
+            const headers = headerRow.split(',').map(h => h.trim().toLowerCase().replace(/"/g, ''));
+            
+            // Check for required columns
+            const codeIndex = headers.findIndex(h => h === 'item code' || h === 'id');
+            const prodPriceIndex = headers.findIndex(h => h === 'avg production price' || h === 'avg prod price');
+            const salesPriceIndex = headers.findIndex(h => h === 'avg sales price');
+
+            if (codeIndex === -1 || (prodPriceIndex === -1 && salesPriceIndex === -1)) {
+                setNotification({ msg: "Invalid CSV headers. Required: 'Item Code' AND ('Avg Production Price' OR 'Avg Sales Price')", type: 'error' });
+                setIsProcessing(false);
+                return;
+            }
+
+            const validUpdates: any[] = [];
+            const errors: any[] = [];
+
+            rows.forEach((row, index) => {
+                // Simple CSV parser (doesn't handle commas within quotes robustly, but sufficient for IDs/Numbers)
+                const cols = row.split(',').map(c => c.trim().replace(/"/g, ''));
+                const itemCode = cols[codeIndex];
+                
+                // Parse numbers, treating empty or invalid as NaN
+                const prodPriceStr = prodPriceIndex !== -1 ? cols[prodPriceIndex] : '';
+                const salesPriceStr = salesPriceIndex !== -1 ? cols[salesPriceIndex] : '';
+                
+                const prodPrice = prodPriceStr ? parseFloat(prodPriceStr) : NaN;
+                const salesPrice = salesPriceStr ? parseFloat(salesPriceStr) : NaN;
+
+                if (!itemCode) return; // Skip empty lines
+
+                const existingItem = state.items.find(i => i.id === itemCode);
+
+                if (!existingItem) {
+                    errors.push({ row: index + 2, message: `Item Code '${itemCode}' not found.` });
+                } else if (isNaN(prodPrice) && isNaN(salesPrice)) {
+                    // Both are invalid or not provided
+                    errors.push({ row: index + 2, message: `No valid numeric price provided for '${itemCode}'.` });
+                } else {
+                    validUpdates.push({
+                        id: itemCode,
+                        name: existingItem.name,
+                        oldProd: existingItem.avgProductionPrice,
+                        newProd: !isNaN(prodPrice) ? prodPrice : existingItem.avgProductionPrice,
+                        oldSales: existingItem.avgSalesPrice,
+                        newSales: !isNaN(salesPrice) ? salesPrice : existingItem.avgSalesPrice
+                    });
+                }
+            });
+
+            setParsedData({ validUpdates, errors });
+            setIsProcessing(false);
+        };
+        reader.readAsText(uploadedFile);
+    };
+
+    const applyUpdates = () => {
+        if (!parsedData?.validUpdates.length) return;
+
+        const batchUpdates = parsedData.validUpdates.map(update => ({
+            type: 'UPDATE_ENTITY' as const,
+            payload: {
+                entity: 'items' as const,
+                data: {
+                    id: update.id,
+                    avgProductionPrice: update.newProd,
+                    avgSalesPrice: update.newSales
+                }
+            }
+        }));
+
+        // Batch update is cleaner
+        dispatch({ type: 'BATCH_UPDATE', payload: batchUpdates });
+        setNotification({ msg: `Successfully updated prices for ${batchUpdates.length} items.`, type: 'success' });
+        onClose();
+    };
+    
+    const downloadTemplate = () => {
+        const headers = "Item Code,Item Name,Category,Avg Production Price,Avg Sales Price";
+        // Pre-fill with existing data to make editing easier
+        const rows = state.items.map(i => {
+             const categoryName = state.categories.find(c => c.id === i.categoryId)?.name || '';
+             // Escape quotes in names
+             const safeName = `"${i.name.replace(/"/g, '""')}"`;
+             const safeCategory = `"${categoryName.replace(/"/g, '""')}"`;
+             return `${i.id},${safeName},${safeCategory},${i.avgProductionPrice},${i.avgSalesPrice}`;
+        }).join('\n');
+        
+        const csvContent = headers + "\n" + rows;
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", "bulk_price_update_template.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const reset = () => {
+        setParsedData(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} title="Bulk Update Item Prices" size="4xl">
+            <div className="space-y-6">
+                {!parsedData ? (
+                    <>
+                        <div className="bg-blue-50 border border-blue-200 p-4 rounded-md text-sm text-blue-800">
+                             <p className="font-semibold mb-1">Instructions:</p>
+                             <ol className="list-decimal list-inside space-y-1">
+                                 <li>Download the current price list CSV.</li>
+                                 <li>Open it in Excel or any spreadsheet editor.</li>
+                                 <li>Update the <strong>Avg Production Price</strong> and <strong>Avg Sales Price</strong> columns as needed.</li>
+                                 <li>Save as CSV and upload it here.</li>
+                             </ol>
+                        </div>
+                        <div>
+                             <button onClick={downloadTemplate} className="flex items-center space-x-2 text-blue-600 hover:underline font-semibold">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                <span>Download Current Price List (Template)</span>
+                            </button>
+                        </div>
+                        <div className="border-t pt-4">
+                            <label className="block text-sm font-medium text-slate-700 mb-2">Upload Updated CSV</label>
+                            <input 
+                                ref={fileInputRef}
+                                type="file" 
+                                accept=".csv" 
+                                onChange={handleFileChange} 
+                                disabled={isProcessing}
+                                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                            />
+                            {isProcessing && <p className="text-sm text-slate-500 mt-2">Processing file...</p>}
+                        </div>
+                    </>
+                ) : (
+                    <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                             <h3 className="text-lg font-semibold text-slate-800">Preview Changes</h3>
+                             <button onClick={reset} className="text-sm text-blue-600 hover:underline">Upload Different File</button>
+                        </div>
+                        
+                        {parsedData.errors.length > 0 && (
+                            <div className="bg-red-50 border border-red-200 p-3 rounded-md max-h-32 overflow-y-auto">
+                                <p className="text-red-800 font-semibold text-sm mb-1">Errors ({parsedData.errors.length})</p>
+                                <ul className="list-disc list-inside text-xs text-red-700">
+                                    {parsedData.errors.map((err, i) => <li key={i}>Row {err.row}: {err.message}</li>)}
+                                </ul>
+                            </div>
+                        )}
+
+                        <div className="border rounded-md max-h-96 overflow-y-auto">
+                            <table className="w-full text-left table-auto text-sm">
+                                <thead className="bg-slate-100 sticky top-0">
+                                    <tr>
+                                        <th className="p-2 font-semibold border-b">Item ID</th>
+                                        <th className="p-2 font-semibold border-b">Name</th>
+                                        <th className="p-2 font-semibold border-b text-right">Old Prod</th>
+                                        <th className="p-2 font-semibold border-b text-right">New Prod</th>
+                                        <th className="p-2 font-semibold border-b text-right">Old Sales</th>
+                                        <th className="p-2 font-semibold border-b text-right">New Sales</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {parsedData.validUpdates.map((u, i) => {
+                                        const prodChanged = u.oldProd !== u.newProd;
+                                        const salesChanged = u.oldSales !== u.newSales;
+                                        if (!prodChanged && !salesChanged) return null; // Hide rows with no changes
+                                        return (
+                                            <tr key={i} className="border-b hover:bg-slate-50">
+                                                <td className="p-2 font-mono text-xs">{u.id}</td>
+                                                <td className="p-2">{u.name}</td>
+                                                <td className="p-2 text-right text-slate-500">{u.oldProd}</td>
+                                                <td className={`p-2 text-right font-bold ${prodChanged ? 'text-blue-600' : 'text-slate-500'}`}>{u.newProd}</td>
+                                                <td className="p-2 text-right text-slate-500">{u.oldSales}</td>
+                                                <td className={`p-2 text-right font-bold ${salesChanged ? 'text-green-600' : 'text-slate-500'}`}>{u.newSales}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                    {parsedData.validUpdates.every(u => u.oldProd === u.newProd && u.oldSales === u.newSales) && (
+                                         <tr><td colSpan={6} className="p-4 text-center text-slate-500">No changes detected in the uploaded file.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div className="flex justify-end gap-3 pt-4 border-t">
+                            <button onClick={onClose} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300">Cancel</button>
+                            <button 
+                                onClick={applyUpdates} 
+                                disabled={parsedData.validUpdates.length === 0} 
+                                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-green-300"
+                            >
+                                Apply {parsedData.validUpdates.length} Updates
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </Modal>
+    );
+};
 
 const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = ({ setNotification }) => {
     const { state, dispatch } = useData();
@@ -354,6 +829,9 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
     const [isBalanceResetConfirmOpen, setIsBalanceResetConfirmOpen] = useState(false);
     const [isHardResetConfirmOpen, setIsHardResetConfirmOpen] = useState(false);
     const [isClearStockConfirmOpen, setIsClearStockConfirmOpen] = useState(false);
+    const [isKgToPackageConfirmOpen, setIsKgToPackageConfirmOpen] = useState(false);
+    const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+    const [isBulkUpdateModalOpen, setIsBulkUpdateModalOpen] = useState(false);
 
     // New state for date-specific deletions
     const [productionDeleteDate, setProductionDeleteDate] = useState('');
@@ -392,20 +870,59 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
 
         if (batchUpdates.length > 0) {
             dispatch({ type: 'BATCH_UPDATE', payload: batchUpdates });
-            setNotification({ msg: `Successfully corrected prices for ${updatedCount} items.`, type: 'success' });
+            setNotification({ msg: `Successfully corrected prices for ${updatedCount} items (Unit -> Kg).`, type: 'success' });
         } else {
             setNotification({ msg: "No items required price correction.", type: 'success' });
         }
         setIsConfirmModalOpen(false); // Close modal on completion
     };
     
+    const executePriceCorrectionKgToPackage = () => {
+        const batchUpdates: any[] = [];
+        let updatedCount = 0;
+
+        state.items.forEach(item => {
+            if (item.packingType !== PackingType.Kg && item.baleSize > 0) {
+                // Converting FROM Kg Price TO Package Price
+                // New Price = Kg Price * Bale Size
+                const newAvgProductionPrice = item.avgProductionPrice * item.baleSize;
+                const newAvgSalesPrice = item.avgSalesPrice * item.baleSize;
+
+                // Basic check to prevent double-running (if price jumps too high, though not perfect logic)
+                if (newAvgProductionPrice !== item.avgProductionPrice || newAvgSalesPrice !== item.avgSalesPrice) {
+                    batchUpdates.push({
+                        type: 'UPDATE_ENTITY',
+                        payload: {
+                            entity: 'items',
+                            data: {
+                                id: item.id,
+                                avgProductionPrice: newAvgProductionPrice,
+                                avgSalesPrice: newAvgSalesPrice,
+                            },
+                        },
+                    });
+                    updatedCount++;
+                }
+            }
+        });
+
+        if (batchUpdates.length > 0) {
+            dispatch({ type: 'BATCH_UPDATE', payload: batchUpdates });
+            setNotification({ msg: `Successfully converted prices for ${updatedCount} items to Package Price.`, type: 'success' });
+        } else {
+            setNotification({ msg: "No items required price conversion.", type: 'success' });
+        }
+        setIsKgToPackageConfirmOpen(false);
+    };
+
     const handlePriceCorrection = () => {
         setIsConfirmModalOpen(true);
     };
 
     const handleCancel = () => {
         setIsConfirmModalOpen(false);
-        setNotification({ msg: "Price Correction cancelled.", type: 'success' });
+        setIsKgToPackageConfirmOpen(false);
+        setNotification({ msg: "Action cancelled.", type: 'success' });
     };
     
     const executeBalanceReset = () => {
@@ -613,6 +1130,22 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
                     The tools in this section perform irreversible bulk data operations. Always download a backup before proceeding.
                 </p>
             </div>
+
+            {/* New Verification Section */}
+            <div className="mb-8 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                <h3 className="text-lg font-semibold text-blue-800 mb-2">Data Verification & Updates</h3>
+                <p className="text-sm text-slate-600 mb-3">Tools for verifying and mass-updating item data.</p>
+                <div className="flex space-x-4">
+                    <button onClick={() => setIsAuditModalOpen(true)} className="px-4 py-2 bg-white text-blue-700 border border-blue-300 rounded-md hover:bg-blue-50 text-sm font-semibold flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002 2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                        View Price List
+                    </button>
+                    <button onClick={() => setIsBulkUpdateModalOpen(true)} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-semibold flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                        Bulk Price Update (CSV)
+                    </button>
+                </div>
+            </div>
             
              <div className="border-t pt-4">
                 <h3 className="text-lg font-semibold text-slate-800 mb-3">Date-Specific Data Deletion</h3>
@@ -689,23 +1222,37 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
             </div>
             
             <div className="border-t pt-4 mt-6">
-                <h3 className="text-lg font-semibold text-slate-800">Correct Item Prices (Unit to Kg)</h3>
+                <h3 className="text-lg font-semibold text-slate-800">Switch Pricing: Kg to Package (Fix Decimal Issues)</h3>
                 <p className="text-sm text-slate-600 mt-1 mb-3">
-                    This tool converts 'Average Production Price' and 'Average Sales Price' from a per-unit (Bale, Box, Sack) price to a per-Kg price by dividing by the item's 'Packing Size'. This is useful if you accidentally imported unit prices instead of Kg prices.
+                    This tool converts 'Average Production Price' and 'Average Sales Price' from a <strong>Per-Kg</strong> price to a <strong>Per-Package</strong> price by <em>multiplying</em> by the item's 'Packing Size'. Use this if your company trades in Bales/Sacks but your prices were entered as Kg rates (causing decimal errors).
+                </p>
+                <button
+                    onClick={() => setIsKgToPackageConfirmOpen(true)}
+                    className="px-4 py-2 bg-indigo-600 text-white font-semibold rounded-md hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                    Switch Pricing to Per-Package
+                </button>
+            </div>
+            
+            <div className="border-t pt-4 mt-6">
+                <h3 className="text-lg font-semibold text-slate-800">Revert Prices (Unit to Kg)</h3>
+                <p className="text-sm text-slate-600 mt-1 mb-3">
+                    This tool converts prices from Per-Unit back to Per-Kg by dividing by the packing size. Only use this if you made a mistake with the package conversion.
                 </p>
                 <button
                     onClick={handlePriceCorrection}
                     className="px-4 py-2 bg-orange-600 text-white font-semibold rounded-md hover:bg-orange-700 transition-colors flex items-center gap-2"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                    Run Price Correction Script
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
+                    Revert Prices to Kg
                 </button>
             </div>
             
             <div className="border-t pt-4 mt-6">
                 <h3 className="text-lg font-semibold text-slate-800">Clear All Item Opening Stock</h3>
                 <p className="text-sm text-slate-600 mt-1 mb-3">
-                    This action will set the 'openingStock' of all items to 0. It will also delete the special production and journal entries that were created to account for this opening stock. Regular production entries will not be affected.
+                    This action will set the `openingStock` of <strong>ALL</strong> items to 0. It will also delete the associated opening stock production and journal entries. <strong>Regular production entries will not be affected.</strong>
                 </p>
                 <button
                     onClick={() => setIsClearStockConfirmOpen(true)}
@@ -719,7 +1266,7 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
             <div className="border-t pt-4 mt-6">
                 <h3 className="text-lg font-semibold text-slate-800">Reset All Entity Opening Balances</h3>
                 <p className="text-sm text-slate-600 mt-1 mb-3">
-                    This action will set the 'startingBalance' of all Customers, Suppliers, all Agents, and Expense Accounts to 0. It will also delete their associated opening balance journal entries.
+                    This action will set the `startingBalance` of <strong>ALL</strong> Customers, Suppliers, all Agents, and Expense Accounts to 0. It will also delete their associated opening balance journal entries.
                 </p>
                 <button
                     onClick={() => setIsBalanceResetConfirmOpen(true)}
@@ -755,15 +1302,11 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
                  <Modal
                     isOpen={isConfirmModalOpen}
                     onClose={handleCancel}
-                    title="Confirm Price Correction"
+                    title="Confirm Price Revert (Unit -> Kg)"
                     size="lg"
                  >
                     <div className="space-y-4">
-                        <p className="font-bold text-red-600">WARNING: This is an irreversible action.</p>
-                        <p className="text-slate-700">This will permanently modify the prices of all items not packed in 'Kg'.</p>
-                        <p className="text-slate-600 bg-slate-100 p-2 rounded-md font-mono text-sm">
-                            New Price = Current Price / Packing Size
-                        </p>
+                        <p className="font-bold text-red-600">WARNING: This action divides prices by packing size.</p>
                         <p className="text-slate-700">Are you sure you want to proceed?</p>
                         <div className="flex justify-end gap-3 pt-4 border-t">
                             <button onClick={handleCancel} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300">
@@ -772,6 +1315,21 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
                             <button onClick={executePriceCorrection} className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700">
                                 Yes, Proceed
                             </button>
+                        </div>
+                    </div>
+                 </Modal>
+            )}
+
+            {isKgToPackageConfirmOpen && (
+                 <Modal isOpen={isKgToPackageConfirmOpen} onClose={handleCancel} title="Confirm Price Switch (Kg -> Package)" size="lg">
+                    <div className="space-y-4">
+                        <p className="font-bold text-indigo-600">Action: Convert Pricing to Per-Package</p>
+                        <p className="text-slate-700">This will multiply the current `Avg Production Price` and `Avg Sales Price` by the `Packing Size` for all items that are NOT in 'Kg'.</p>
+                        <p className="text-slate-600 bg-slate-100 p-2 rounded-md font-mono text-sm">New Price = Current Price (Kg) * Packing Size</p>
+                        <p className="text-slate-700">This helps eliminate rounding errors for large production volumes. Proceed?</p>
+                        <div className="flex justify-end gap-3 pt-4 border-t">
+                            <button onClick={handleCancel} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300">Cancel</button>
+                            <button onClick={executePriceCorrectionKgToPackage} className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">Yes, Switch Pricing</button>
                         </div>
                     </div>
                  </Modal>
@@ -929,6 +1487,8 @@ const DataCorrectionManager: React.FC<{ setNotification: (n: any) => void; }> = 
                     </div>
                 </Modal>
             )}
+             {isAuditModalOpen && <ItemPriceAuditorModal isOpen={isAuditModalOpen} onClose={() => setIsAuditModalOpen(false)} state={state} />}
+             {isBulkUpdateModalOpen && <BulkPriceUpdateModal isOpen={isBulkUpdateModalOpen} onClose={() => setIsBulkUpdateModalOpen(false)} setNotification={setNotification} />}
         </div>
     );
 };
@@ -1049,6 +1609,7 @@ const AdminModule: React.FC<{ setNotification: (n: any) => void; }> = ({ setNoti
     return (
         <div className="space-y-8">
             {userProfile?.isAdmin && <UserManager setNotification={setNotification} />}
+            {userProfile?.isAdmin && <PurchaseRateCorrector setNotification={setNotification} />}
             <ManualEditManager setNotification={setNotification} />
             {userProfile?.isAdmin && <DataCorrectionManager setNotification={setNotification} />}
             {userProfile?.isAdmin && <BackupRestoreManager setNotification={setNotification} />}

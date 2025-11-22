@@ -64,12 +64,9 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
     const customer = state.customers.find(c => c.id === invoice.customerId);
     
     const calculateItemValue = (item: InvoiceItem) => {
-        const itemDetails = state.items.find(i => i.id === item.itemId);
-        if (!itemDetails || item.rate === undefined) return 0;
-        if (itemDetails.packingType === PackingType.Bales) {
-            return item.quantity * itemDetails.baleSize * item.rate;
-        }
-        return item.quantity * item.rate;
+        // LOGIC UPDATE: For packaged items, item.rate is now PER PACKAGE.
+        // So we simply multiply Quantity * Rate regardless of packing type.
+        return item.quantity * (item.rate || 0);
     };
     
     const itemsTotal = invoice.items.reduce((sum, item) => sum + calculateItemValue(item), 0);
@@ -100,7 +97,7 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
                     <tr className="bg-slate-50">
                         <th className="p-2 font-semibold text-slate-600">Item</th>
                         <th className="p-2 font-semibold text-slate-600 text-right">Quantity</th>
-                        <th className="p-2 font-semibold text-slate-600 text-right">Rate (per Kg)</th>
+                        <th className="p-2 font-semibold text-slate-600 text-right">Rate ({currency})</th>
                         <th className="p-2 font-semibold text-slate-600 text-right">Total</th>
                     </tr>
                 </thead>
@@ -108,11 +105,16 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
                     {invoice.items.map((item, index) => {
                         const itemDetails = state.items.find(i => i.id === item.itemId);
                         const totalValue = calculateItemValue(item);
+                        // Display rate helper text
+                        const rateUnit = itemDetails?.packingType === PackingType.Bales ? 'per Bale' 
+                                        : itemDetails?.packingType === PackingType.Sacks ? 'per Sack'
+                                        : 'per Kg';
+
                         return (
                             <tr key={index} className="border-b">
                                 <td className="p-2 text-slate-700">{itemDetails?.name || 'Unknown Item'}</td>
                                 <td className="p-2 text-slate-700 text-right">{item.quantity.toLocaleString()}</td>
-                                <td className="p-2 text-slate-700 text-right">{(item.rate || 0).toFixed(2)}</td>
+                                <td className="p-2 text-slate-700 text-right">{(item.rate || 0).toFixed(2)} <span className="text-xs text-slate-500">{rateUnit}</span></td>
                                 <td className="p-2 text-slate-700 text-right">{totalValue.toFixed(2)}</td>
                             </tr>
                         );
@@ -186,7 +188,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     
     const [currentItemId, setCurrentItemId] = useState('');
     const [currentQuantity, setCurrentQuantity] = useState<number | ''>('');
-    const [currentPackageRate, setCurrentPackageRate] = useState<number | ''>('');
+    const [currentRate, setCurrentRate] = useState<number | ''>(''); // Changed from currentPackageRate to currentRate
     const [currentInvoiceItems, setCurrentInvoiceItems] = useState<(Omit<InvoiceItem, 'quantity'> & { quantity: number | '' })[]>([]);
 
 
@@ -202,6 +204,9 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     const [editingInvoice, setEditingInvoice] = useState<SalesInvoice | null>(null);
     const [viewingInvoice, setViewingInvoice] = useState<SalesInvoice | null>(null);
     const [updateFilters, setUpdateFilters] = useState({ startDate: '2024-01-01', endDate: new Date().toISOString().split('T')[0], customerId: '' });
+
+    const [showResetConfirm, setShowResetConfirm] = useState(false);
+    const resetConfirmTimeoutRef = useRef<number | null>(null);
 
     const customerRef = useRef<HTMLSelectElement>(null);
     const itemRef = useRef<HTMLInputElement>(null);
@@ -297,7 +302,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         setDiscountSurcharge('');
         setCurrentItemId('');
         setCurrentQuantity('');
-        setCurrentPackageRate('');
+        setCurrentRate(''); // Reset generic rate
         setCurrentInvoiceItems([]);
         setCompletedInvoice(null);
         setLastInvoiceForCustomer(null);
@@ -314,6 +319,44 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         setCommissionCurrencyData({ currency: Currency.Dollar, conversionRate: 1 });
     };
 
+     const isFormDirty = useMemo(() => {
+        return !!customerId || currentInvoiceItems.length > 0;
+    }, [customerId, currentInvoiceItems]);
+
+    useEffect(() => {
+        const handleLocalKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && isFormDirty && subModule === 'new' && !isSummaryModalOpen && !invoiceToDownload && !viewingInvoice) {
+                event.preventDefault();
+                event.stopPropagation(); 
+
+                if (showResetConfirm) {
+                    resetInvoice();
+                    setNotification("Invoice form has been reset.");
+                    setShowResetConfirm(false);
+                    if (resetConfirmTimeoutRef.current) {
+                        clearTimeout(resetConfirmTimeoutRef.current);
+                    }
+                } else {
+                    setShowResetConfirm(true);
+                    setNotification("Press Escape again to reset the form.");
+                    resetConfirmTimeoutRef.current = window.setTimeout(() => {
+                        setShowResetConfirm(false);
+                    }, 3000);
+                }
+            }
+        };
+        
+        document.addEventListener('keydown', handleLocalKeyDown);
+
+        return () => {
+            document.removeEventListener('keydown', handleLocalKeyDown);
+            if (resetConfirmTimeoutRef.current) {
+                clearTimeout(resetConfirmTimeoutRef.current);
+            }
+        };
+    }, [isFormDirty, showResetConfirm, subModule, isSummaryModalOpen, invoiceToDownload, viewingInvoice]);
+
+
     const handleAddItem = (e: React.FormEvent) => {
         e.preventDefault();
         if (!currentItemId || !currentQuantity || currentQuantity <= 0) return;
@@ -323,22 +366,21 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             return;
         }
 
-        let perKgRate = itemDetails.avgSalesPrice;
-        const packageRateNum = Number(currentPackageRate);
-        if (itemDetails.packingType !== PackingType.Kg && itemDetails.baleSize > 0 && packageRateNum > 0) {
-            perKgRate = packageRateNum / itemDetails.baleSize;
-        }
+        // LOGIC UPDATE: Assuming 'avgSalesPrice' has been corrected to be per package if applicable.
+        // If the user enters a specific rate, use it. Otherwise use the system's avg sales price.
+        // We treat this rate as PER UNIT (Bale/Sack/Kg).
+        const rateToUse = Number(currentRate) > 0 ? Number(currentRate) : itemDetails.avgSalesPrice;
 
         setCurrentInvoiceItems([...currentInvoiceItems, { 
             itemId: currentItemId, 
             quantity: Number(currentQuantity), 
-            rate: perKgRate,
+            rate: rateToUse,
             currency: Currency.Dollar,
             conversionRate: 1,
         }]);
         setCurrentItemId('');
         setCurrentQuantity('');
-        setCurrentPackageRate('');
+        setCurrentRate('');
         setNotification('Item added to invoice.');
         itemRef.current?.focus();
     };
@@ -436,7 +478,6 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         
         setInvoiceToDownload(completedInvoice);
 
-        // FIX: Replaced 'showNotification' with 'setNotification' to correctly update the notification state.
         setNotification('Invoice saved successfully!');
         resetInvoice();
         setIsSummaryModalOpen(false);
@@ -506,6 +547,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             return {
                 ...i, 
                 quantity: i.quantity,
+                // Load rate directly
                 rate: i.rate ?? itemDetails?.avgSalesPrice,
             };
         }));
@@ -514,7 +556,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
 
     const renderAddItemForm = () => {
         const itemDetails = state.items.find(i => i.id === currentItemId);
-        const showPackageRate = itemDetails && itemDetails.packingType !== PackingType.Kg && itemDetails.baleSize > 0;
+        const rateLabel = itemDetails?.packingType === PackingType.Bales ? 'Rate (per Bale)' : itemDetails?.packingType === PackingType.Sacks ? 'Rate (per Sack)' : 'Rate (per Kg)';
 
         return (
             <div className="p-4 border rounded-lg bg-slate-50 space-y-4">
@@ -528,7 +570,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                             selectedItemId={currentItemId}
                             onSelect={(id) => {
                                 setCurrentItemId(id);
-                                setCurrentPackageRate('');
+                                setCurrentRate('');
                             }}
                         />
                     </div>
@@ -541,19 +583,19 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                             className="w-full p-2 rounded-md"
                         />
                     </div>
-                    {showPackageRate && (
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-1">Sales Package Rate</label>
-                            <input 
-                                type="number"
-                                step="0.01"
-                                value={currentPackageRate} 
-                                onChange={e => setCurrentPackageRate(e.target.value === '' ? '' : Number(e.target.value))} 
-                                className="w-full p-2 rounded-md"
-                                placeholder={`e.g., Rate for a ${itemDetails.baleSize}kg ${itemDetails.packingType}`}
-                            />
-                        </div>
-                    )}
+                    
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">{rateLabel}</label>
+                        <input 
+                            type="number"
+                            step="0.01"
+                            value={currentRate} 
+                            onChange={e => setCurrentRate(e.target.value === '' ? '' : Number(e.target.value))} 
+                            className="w-full p-2 rounded-md"
+                            placeholder={itemDetails ? `e.g., ${itemDetails.avgSalesPrice}` : ''}
+                        />
+                    </div>
+                    
                     <button type="submit" className="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 h-10">
                         Add Item to Invoice
                     </button>
@@ -612,7 +654,8 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                             
                                             const rate = Number(item.rate) || 0;
                                             const conversionRate = Number(item.conversionRate) || 1;
-                                            const totalWorth = totalKgForItem * rate * conversionRate;
+                                            // LOGIC UPDATE: Total Worth = Qty * Rate * Conversion
+                                            const totalWorth = (Number(item.quantity) || 0) * rate * conversionRate;
                                             const currency = item.currency || Currency.Dollar;
                                             return (
                                             <tr key={index} className="border-b hover:bg-slate-50 transition-colors">
@@ -620,7 +663,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                                     {itemDetails?.name}
                                                     <span className="text-xs text-slate-500 ml-2">({item.itemId})</span>
                                                 </td>
-                                                <td className="p-3 text-slate-700 align-middle text-right">{itemDetails?.packingType !== PackingType.Kg ? itemDetails.baleSize : 'N/A'}</td>
+                                                <td className="p-3 text-slate-700 align-middle text-right">{itemDetails?.packingType !== PackingType.Kg ? itemDetails?.baleSize : 'N/A'}</td>
                                                 <td className="p-3 text-slate-700 align-middle">
                                                     <input
                                                         type="number"
@@ -728,6 +771,12 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         <div className="space-y-6">
             {notification && <Notification message={notification} onTimeout={() => setNotification(null)} />}
             
+            {showResetConfirm && (
+                <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-gray-800 text-white py-2 px-4 rounded-lg shadow-lg z-50 animate-fade-in-out-short font-semibold">
+                    Press Escape again to reset the form.
+                </div>
+            )}
+            
             <div className="flex items-center space-x-2">
                 <button onClick={() => { setSubModule('new'); resetInvoice(); }} className={getButtonClass('new')}>New Invoice</button>
                 <button onClick={() => { setSubModule('update'); resetInvoice(); }} className={getButtonClass('update')}>Update / View Invoices</button>
@@ -736,7 +785,8 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             {subModule === 'new' && (
                 <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end p-4 border rounded-md bg-white">
-                        <div className="md:col-span-1">
+                        {/* ... (Header fields: Customer, Logo, Color, ID, Date) ... */}
+                         <div className="md:col-span-1">
                             <label className="block text-sm font-medium text-slate-700">Customer</label>
                             <EntitySelector
                                 entities={state.customers}

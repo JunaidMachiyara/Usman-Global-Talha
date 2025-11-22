@@ -5,6 +5,7 @@ import ReportToolbar from './ReportToolbar.tsx';
 import { AppState, Currency, InvoiceItem, InvoiceStatus, PackingType, SalesInvoice } from '../../types.ts';
 import Modal from '../ui/Modal.tsx';
 
+// View Modal Component
 const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; state: AppState }> = ({ invoiceId, onClose, state }) => {
     const invoice = state.salesInvoices.find(inv => inv.id === invoiceId);
 
@@ -19,15 +20,9 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
     const customer = state.customers.find(c => c.id === invoice.customerId);
     const handlePrint = () => window.print();
 
+    // UPDATED Logic: Value = Qty * Rate (Rate is Per Unit)
     const calculateItemValue = (item: InvoiceItem) => {
-        const itemDetails = state.items.find(i => i.id === item.itemId);
-        if (!itemDetails || !item.rate) return 0;
-
-        if (itemDetails.packingType === PackingType.Bales) {
-            const totalKg = item.quantity * itemDetails.baleSize;
-            return totalKg * item.rate;
-        }
-        return item.quantity * item.rate;
+        return item.quantity * (item.rate || 0);
     };
     
     const itemsTotal = invoice.items.reduce((sum, item) => sum + calculateItemValue(item), 0);
@@ -54,7 +49,7 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
                         <tr className="bg-slate-50">
                             <th className="p-2 font-semibold text-slate-600">Item</th>
                             <th className="p-2 font-semibold text-slate-600 text-right">Quantity</th>
-                            <th className="p-2 font-semibold text-slate-600 text-right">Rate (per Kg)</th>
+                            <th className="p-2 font-semibold text-slate-600 text-right">Rate</th>
                             <th className="p-2 font-semibold text-slate-600 text-right">Total</th>
                         </tr>
                     </thead>
@@ -114,7 +109,6 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
     );
 };
 
-
 const SalesInvoiceReport: React.FC = () => {
     const { state } = useData();
     const today = new Date().toISOString().split('T')[0];
@@ -135,13 +129,11 @@ const SalesInvoiceReport: React.FC = () => {
         }
 
         const itemsTotal = invoice.items.reduce((total, item) => {
-            const itemDetails = state.items.find(i => i.id === item.itemId);
-            if (!itemDetails || item.rate === undefined || item.currency === undefined || item.conversionRate === undefined) return total;
+            if (item.rate === undefined || item.currency === undefined || item.conversionRate === undefined) return total;
 
-            const totalKgForItem = itemDetails.packingType === PackingType.Bales ? item.quantity * itemDetails.baleSize : item.quantity;
-            const totalForeignAmount = totalKgForItem * item.rate;
-
-            const itemValueInDollar = totalForeignAmount * item.conversionRate;
+            // UPDATED: Logic is Qty * Rate * Conversion. Weight is removed.
+            const itemValueForeign = item.quantity * item.rate;
+            const itemValueInDollar = itemValueForeign * item.conversionRate;
             
             return total + itemValueInDollar;
         }, 0);

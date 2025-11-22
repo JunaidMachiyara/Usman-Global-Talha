@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportFilters from './ReportFilters.tsx';
@@ -25,6 +24,7 @@ const DailyProductionReport: React.FC = () => {
         const costMap: { [originalTypeId: string]: { totalKg: number; totalCost: number } } = {};
         
         state.originalPurchases.forEach((p: OriginalPurchased) => {
+             // ... (no changes to Raw Material Cost logic) ...
             const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
             if (!originalType) return;
 
@@ -80,11 +80,8 @@ const DailyProductionReport: React.FC = () => {
                 const isPackage = item?.packingType === PackingType.Kg ? false : (item && packageTypesWithSize.includes(item.packingType));
                 const packageSize = isPackage ? (item.baleSize || 0) : 1;
                 
-                // Calculate Total Kg produced for this entry
-                const totalKgProduced = p.quantityProduced * packageSize;
-                
-                // Calculate Worth: Total Kg * Avg Production Price
-                const productionWorth = totalKgProduced * (item?.avgProductionPrice || 0);
+                // UPDATED LOGIC: Production Worth = Quantity Produced * Unit Price
+                const productionWorth = p.quantityProduced * (item?.avgProductionPrice || 0);
 
                 return {
                     id: p.id,
