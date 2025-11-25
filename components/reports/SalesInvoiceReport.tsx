@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportFilters from './ReportFilters.tsx';
@@ -57,11 +58,18 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
                         {invoice.items.map((item, index) => {
                             const itemDetails = state.items.find(i => i.id === item.itemId);
                             const totalValue = calculateItemValue(item);
+                            let unitLabel = "";
+                            if (itemDetails) {
+                                if (itemDetails.packingType === PackingType.Bales) unitLabel = " / Bale";
+                                else if (itemDetails.packingType === PackingType.Sacks) unitLabel = " / Sack";
+                                else if (itemDetails.packingType === PackingType.Kg) unitLabel = " / Kg";
+                            }
+
                             return (
                                 <tr key={index} className="border-b">
                                     <td className="p-2 text-slate-700">{itemDetails?.name || 'Unknown Item'}</td>
                                     <td className="p-2 text-slate-700 text-right">{item.quantity.toLocaleString()}</td>
-                                    <td className="p-2 text-slate-700 text-right">{(item.rate || 0).toFixed(2)}</td>
+                                    <td className="p-2 text-slate-700 text-right">{(item.rate || 0).toFixed(2)}{unitLabel && <span className="text-xs text-slate-500">{unitLabel}</span>}</td>
                                     <td className="p-2 text-slate-700 text-right">{totalValue.toFixed(2)}</td>
                                 </tr>
                             );
@@ -131,7 +139,7 @@ const SalesInvoiceReport: React.FC = () => {
         const itemsTotal = invoice.items.reduce((total, item) => {
             if (item.rate === undefined || item.currency === undefined || item.conversionRate === undefined) return total;
 
-            // UPDATED: Logic is Qty * Rate * Conversion. Weight is removed.
+            // UPDATED: Logic is Qty * Rate * Conversion. Rate is Unit Price.
             const itemValueForeign = item.quantity * item.rate;
             const itemValueInDollar = itemValueForeign * item.conversionRate;
             

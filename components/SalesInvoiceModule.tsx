@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { generateInvoiceId } from '../utils/idGenerator.ts';
@@ -33,7 +34,7 @@ const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; d
 
 const Notification: React.FC<{ message: string; onTimeout: () => void }> = ({ message, onTimeout }) => {
     useEffect(() => {
-        const timer = setTimeout(onTimeout, 2000);
+        const timer = setTimeout(onTimeout, 3000);
         return () => clearTimeout(timer);
     }, [onTimeout]);
 
@@ -63,9 +64,8 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
 
     const customer = state.customers.find(c => c.id === invoice.customerId);
     
+    // LOGIC: Rate is Per Unit (Package or Kg). Total = Quantity * Rate.
     const calculateItemValue = (item: InvoiceItem) => {
-        // LOGIC UPDATE: For packaged items, item.rate is now PER PACKAGE.
-        // So we simply multiply Quantity * Rate regardless of packing type.
         return item.quantity * (item.rate || 0);
     };
     
@@ -97,7 +97,7 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
                     <tr className="bg-slate-50">
                         <th className="p-2 font-semibold text-slate-600">Item</th>
                         <th className="p-2 font-semibold text-slate-600 text-right">Quantity</th>
-                        <th className="p-2 font-semibold text-slate-600 text-right">Rate ({currency})</th>
+                        <th className="p-2 font-semibold text-slate-600 text-right">Rate</th>
                         <th className="p-2 font-semibold text-slate-600 text-right">Total</th>
                     </tr>
                 </thead>
@@ -105,16 +105,19 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
                     {invoice.items.map((item, index) => {
                         const itemDetails = state.items.find(i => i.id === item.itemId);
                         const totalValue = calculateItemValue(item);
-                        // Display rate helper text
-                        const rateUnit = itemDetails?.packingType === PackingType.Bales ? 'per Bale' 
-                                        : itemDetails?.packingType === PackingType.Sacks ? 'per Sack'
-                                        : 'per Kg';
+                        
+                        let unitLabel = "";
+                        if (itemDetails) {
+                             if (itemDetails.packingType === PackingType.Bales) unitLabel = " / Bale";
+                             else if (itemDetails.packingType === PackingType.Sacks) unitLabel = " / Sack";
+                             else if (itemDetails.packingType === PackingType.Kg) unitLabel = " / Kg";
+                        }
 
                         return (
                             <tr key={index} className="border-b">
                                 <td className="p-2 text-slate-700">{itemDetails?.name || 'Unknown Item'}</td>
                                 <td className="p-2 text-slate-700 text-right">{item.quantity.toLocaleString()}</td>
-                                <td className="p-2 text-slate-700 text-right">{(item.rate || 0).toFixed(2)} <span className="text-xs text-slate-500">{rateUnit}</span></td>
+                                <td className="p-2 text-slate-700 text-right">{(item.rate || 0).toFixed(2)}{unitLabel && <span className="text-xs text-slate-500">{unitLabel}</span>}</td>
                                 <td className="p-2 text-slate-700 text-right">{totalValue.toFixed(2)}</td>
                             </tr>
                         );
@@ -158,6 +161,7 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
              <div className="flex justify-between items-center pt-16 text-sm text-slate-600">
                  <p>____________________<br/>Prepared By</p>
                  <p>____________________<br/>Approved By</p>
+                 <p>____________________<br/>Receiver's Signature</p>
              </div>
         </div>
     );
@@ -188,7 +192,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     
     const [currentItemId, setCurrentItemId] = useState('');
     const [currentQuantity, setCurrentQuantity] = useState<number | ''>('');
-    const [currentRate, setCurrentRate] = useState<number | ''>(''); // Changed from currentPackageRate to currentRate
+    const [currentRate, setCurrentRate] = useState<number | ''>(''); 
     const [currentInvoiceItems, setCurrentInvoiceItems] = useState<(Omit<InvoiceItem, 'quantity'> & { quantity: number | '' })[]>([]);
 
 
@@ -254,7 +258,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     }, [customerId, invoiceId, state.nextInvoiceNumber, state.salesInvoices, state.customers, editingInvoice]);
     
     useEffect(() => { if (!freightForwarderId) setFreightAmount(''); }, [freightForwarderId]);
-    useEffect(() => { if (!clearingAgentId) setCustomCharges(''); }, [clearingAgentId]);
+    // Removed custom charges dependency on clearing agent
     useEffect(() => { if (!commissionAgentId) setCommissionAmount(''); }, [commissionAgentId]);
 
     useEffect(() => {
@@ -302,7 +306,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         setDiscountSurcharge('');
         setCurrentItemId('');
         setCurrentQuantity('');
-        setCurrentRate(''); // Reset generic rate
+        setCurrentRate(''); 
         setCurrentInvoiceItems([]);
         setCompletedInvoice(null);
         setLastInvoiceForCustomer(null);
@@ -366,10 +370,18 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             return;
         }
 
-        // LOGIC UPDATE: Assuming 'avgSalesPrice' has been corrected to be per package if applicable.
-        // If the user enters a specific rate, use it. Otherwise use the system's avg sales price.
-        // We treat this rate as PER UNIT (Bale/Sack/Kg).
-        const rateToUse = Number(currentRate) > 0 ? Number(currentRate) : itemDetails.avgSalesPrice;
+        // LOGIC: Rate entered is per Unit (Package or Kg). 
+        // If user leaves rate blank, default to avgSalesPrice from item.
+        // If item is Bale, avgSalesPrice might be Per Kg in setup.
+        let defaultRate = itemDetails.avgSalesPrice;
+        if (itemDetails.packingType !== PackingType.Kg && itemDetails.baleSize > 0) {
+             // Assuming avgSalesPrice in Item Setup is PER KG.
+             // So default Package Rate = AvgSalesPrice * BaleSize
+             defaultRate = itemDetails.avgSalesPrice * itemDetails.baleSize;
+        }
+
+        // If user entered a rate, use it directly. If not, use calculated default.
+        const rateToUse = Number(currentRate) > 0 ? Number(currentRate) : defaultRate;
 
         setCurrentInvoiceItems([...currentInvoiceItems, { 
             itemId: currentItemId, 
@@ -430,7 +442,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             customerId,
             items: itemsWithNumericQuantities,
             status: editingInvoice?.status || InvoiceStatus.Unposted,
-            totalBales: totalPackages, // totalBales property is used for this in the type
+            totalBales: totalPackages, 
             totalKg,
             logoId: logoId || undefined,
             packingColor: packingColor || undefined,
@@ -465,9 +477,8 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     const handleSaveAndProceed = () => {
         if (!completedInvoice) return;
 
-        // If it was a posted invoice being edited, we need to update Journal Entries
         if (editingInvoice && editingInvoice.status === InvoiceStatus.Posted) {
-            // ... (Journal Entry logic remains the same, omitted for brevity)
+            // ... logic for existing invoices if needed
         }
         
         if (editingInvoice) {
@@ -544,11 +555,17 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
 
         setCurrentInvoiceItems(invoice.items.map(i => {
             const itemDetails = state.items.find(item => item.id === i.itemId);
+            
+            // If rate is not present in invoice (legacy), calculate default
+            let defaultRate = itemDetails?.avgSalesPrice;
+            if (itemDetails?.packingType !== PackingType.Kg && itemDetails?.baleSize) {
+                defaultRate = (itemDetails.avgSalesPrice || 0) * itemDetails.baleSize;
+            }
+
             return {
                 ...i, 
                 quantity: i.quantity,
-                // Load rate directly
-                rate: i.rate ?? itemDetails?.avgSalesPrice,
+                rate: i.rate ?? defaultRate,
             };
         }));
         setSubModule('new');
@@ -556,7 +573,21 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
 
     const renderAddItemForm = () => {
         const itemDetails = state.items.find(i => i.id === currentItemId);
-        const rateLabel = itemDetails?.packingType === PackingType.Bales ? 'Rate (per Bale)' : itemDetails?.packingType === PackingType.Sacks ? 'Rate (per Sack)' : 'Rate (per Kg)';
+        let rateLabel = "Rate";
+        let placeholder = "";
+        
+        if (itemDetails) {
+            if (itemDetails.packingType === PackingType.Bales) {
+                rateLabel = "Rate (per Bale)";
+                placeholder = `Avg: ${itemDetails.avgSalesPrice * itemDetails.baleSize}`;
+            } else if (itemDetails.packingType === PackingType.Sacks) {
+                rateLabel = "Rate (per Sack)";
+                placeholder = `Avg: ${itemDetails.avgSalesPrice * itemDetails.baleSize}`;
+            } else {
+                rateLabel = "Rate (per Kg)";
+                placeholder = `Avg: ${itemDetails.avgSalesPrice}`;
+            }
+        }
 
         return (
             <div className="p-4 border rounded-lg bg-slate-50 space-y-4">
@@ -592,7 +623,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                             value={currentRate} 
                             onChange={e => setCurrentRate(e.target.value === '' ? '' : Number(e.target.value))} 
                             className="w-full p-2 rounded-md"
-                            placeholder={itemDetails ? `e.g., ${itemDetails.avgSalesPrice}` : ''}
+                            placeholder={placeholder}
                         />
                     </div>
                     
@@ -654,9 +685,17 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                             
                                             const rate = Number(item.rate) || 0;
                                             const conversionRate = Number(item.conversionRate) || 1;
-                                            // LOGIC UPDATE: Total Worth = Qty * Rate * Conversion
+                                            // LOGIC: Total Worth = Qty * Rate (Unit Price) * Conversion
                                             const totalWorth = (Number(item.quantity) || 0) * rate * conversionRate;
                                             const currency = item.currency || Currency.Dollar;
+                                            
+                                            let unitLabel = "";
+                                            if (itemDetails) {
+                                                if (itemDetails.packingType === PackingType.Bales) unitLabel = "/Bale";
+                                                else if (itemDetails.packingType === PackingType.Sacks) unitLabel = "/Sack";
+                                                else unitLabel = "/Kg";
+                                            }
+
                                             return (
                                             <tr key={index} className="border-b hover:bg-slate-50 transition-colors">
                                                 <td className="p-3 text-slate-700 align-middle">
@@ -679,11 +718,11 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                                         <input
                                                             type="number"
                                                             value={item.rate ?? ''}
-                                                            className="w-full p-2 pr-10 rounded-md bg-slate-100 text-slate-500 text-right"
+                                                            className="w-full p-2 pr-16 rounded-md bg-slate-100 text-slate-500 text-right"
                                                             aria-label={`Rate for ${itemDetails?.name}`}
                                                             disabled
                                                         />
-                                                        <span className="absolute inset-y-0 right-0 flex items-center pr-3 text-sm text-slate-500">{currency}</span>
+                                                        <span className="absolute inset-y-0 right-0 flex items-center pr-3 text-sm text-slate-500 pointer-events-none">{unitLabel} {currency}</span>
                                                     </div>
                                                 </td>
                                                 <td className="p-3 text-slate-700 align-middle text-right font-medium">{formatCurrency(totalWorth)}</td>
@@ -785,8 +824,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             {subModule === 'new' && (
                 <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end p-4 border rounded-md bg-white">
-                        {/* ... (Header fields: Customer, Logo, Color, ID, Date) ... */}
-                         <div className="md:col-span-1">
+                        <div className="md:col-span-1">
                             <label className="block text-sm font-medium text-slate-700">Customer</label>
                             <EntitySelector
                                 entities={state.customers}
@@ -837,10 +875,12 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                     <input type="number" value={freightAmount} placeholder="Freight Amount" onChange={e => setFreightAmount(e.target.value === '' ? '' : Number(e.target.value))} disabled={!freightForwarderId} className="w-full p-2 rounded-md" />
                                     <CurrencyInput value={freightCurrencyData} onChange={setFreightCurrencyData} disabled={!freightForwarderId} />
                                 </div>
-                                <div><label className="block text-sm font-medium text-slate-700">Clearing Agent</label><select value={clearingAgentId} onChange={e => setClearingAgentId(e.target.value)} className="mt-1 w-full p-2 rounded-md"><option value="">Select...</option>{state.clearingAgents.map(ca => <option key={ca.id} value={ca.id}>{ca.name}</option>)}</select></div>
+                                <div><label className="block text-sm font-medium text-slate-700">Clearing Agent (Optional)</label><select value={clearingAgentId} onChange={e => setClearingAgentId(e.target.value)} className="mt-1 w-full p-2 rounded-md"><option value="">Select...</option>{state.clearingAgents.map(ca => <option key={ca.id} value={ca.id}>{ca.name}</option>)}</select></div>
+                                
+                                <div><label className="block text-sm font-medium text-slate-700">Custom Charges (Duty/Taxes)</label></div>
                                 <div className="grid grid-cols-2 gap-2">
-                                    <input type="number" value={customCharges} placeholder="Clearing Amount" onChange={e => setCustomCharges(e.target.value === '' ? '' : Number(e.target.value))} disabled={!clearingAgentId} className="w-full p-2 rounded-md" />
-                                    <CurrencyInput value={clearingCurrencyData} onChange={setClearingCurrencyData} disabled={!clearingAgentId} />
+                                    <input type="number" value={customCharges} placeholder="Amount" onChange={e => setCustomCharges(e.target.value === '' ? '' : Number(e.target.value))} className="w-full p-2 rounded-md" />
+                                    <CurrencyInput value={clearingCurrencyData} onChange={setClearingCurrencyData} />
                                 </div>
                                 <div><label className="block text-sm font-medium text-slate-700">Commission Agent</label><select value={commissionAgentId} onChange={e => setCommissionAgentId(e.target.value)} className="mt-1 w-full p-2 rounded-md"><option value="">Select...</option>{state.commissionAgents.map(ca => <option key={ca.id} value={ca.id}>{ca.name}</option>)}</select></div>
                                  <div className="grid grid-cols-2 gap-2">

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { SalesInvoice, InvoiceStatus, InvoiceItem, JournalEntry, JournalEntryType, PackingType, Currency, Module, UserProfile } from '../types.ts';
@@ -11,7 +10,6 @@ interface PostingModuleProps {
 
 interface ItemDetails {
     rate: number | '';
-    packageRate: number | '';
     currency: Currency;
     conversionRate: number;
 }
@@ -20,39 +18,28 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
     const { state, dispatch } = useData();
     const [selectedInvoice, setSelectedInvoice] = useState<SalesInvoice | null>(null);
     const [itemDetails, setItemDetails] = useState<Record<string, ItemDetails>>({});
-    const [freightForwarderId, setFreightForwarderId] = useState<string>('');
-    const [freightAmount, setFreightAmount] = useState<number | ''>('');
-    const [customCharges, setCustomCharges] = useState<number | ''>('');
 
     const unpostedInvoices = state.salesInvoices.filter(inv => inv.status === InvoiceStatus.Unposted);
     
-    useEffect(() => {
-        if (!freightForwarderId) {
-            setFreightAmount('');
-        }
-    }, [freightForwarderId]);
-
     const handleSelectInvoice = (invoice: SalesInvoice) => {
         setSelectedInvoice(invoice);
         const initialDetails = invoice.items.reduce((acc, item) => {
             const itemInfo = state.items.find(i => i.id === item.itemId);
             
-            // Default rate comes from item.rate or itemInfo.avgSalesPrice. This is per Kg usually.
-            const ratePerKg = item.rate || itemInfo?.avgSalesPrice || '';
+            // Default rate is now interpreted as Per Unit (whether Bale, Sack, or Kg)
+            let defaultRate = item.rate;
             
-            let packageRate: number | '' = '';
-            if (itemInfo) {
-                const isPackage = itemInfo.packingType !== PackingType.Kg;
-                // For Kg items, size is 1, so packageRate = ratePerKg * 1
-                const size = isPackage ? (itemInfo.baleSize || 1) : 1;
-                if (ratePerKg !== '' && size > 0) {
-                    packageRate = Number(ratePerKg) * size;
-                }
+            if (defaultRate === undefined && itemInfo) {
+                 if (itemInfo.packingType !== PackingType.Kg && itemInfo.baleSize > 0) {
+                     // Convert Setup Kg Price to Unit Price for default
+                     defaultRate = itemInfo.avgSalesPrice * itemInfo.baleSize;
+                 } else {
+                     defaultRate = itemInfo.avgSalesPrice;
+                 }
             }
 
             acc[item.itemId] = {
-                rate: ratePerKg,
-                packageRate: packageRate,
+                rate: defaultRate !== undefined ? defaultRate : '',
                 currency: item.currency || Currency.Dollar,
                 conversionRate: item.conversionRate || 1,
             };
@@ -60,19 +47,11 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
         }, {} as Record<string, ItemDetails>);
         
         setItemDetails(initialDetails);
-        setFreightForwarderId(invoice.freightForwarderId || '');
-        
-        const freightInUSD = (invoice.freightAmount || 0) * (invoice.freightConversionRate || 1);
-        setFreightAmount(freightInUSD > 0 ? freightInUSD : '');
-
-        const customChargesInUSD = (invoice.customCharges || 0) * (invoice.customChargesConversionRate || 1);
-        setCustomCharges(customChargesInUSD > 0 ? customChargesInUSD : '');
     };
 
     const handleItemDetailChange = (itemId: string, field: keyof ItemDetails, value: any) => {
         setItemDetails(prev => {
             const currentDetails = { ...prev[itemId] };
-            const itemInfo = state.items.find(i => i.id === itemId);
             
             if (field === 'currency') {
                 const newCurrency = value.currency;
@@ -81,27 +60,6 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                  currentDetails.conversionRate = newConversionRate;
             } else {
                 (currentDetails as any)[field] = value;
-
-                const isPackage = itemInfo && itemInfo.packingType !== PackingType.Kg;
-                const size = (isPackage ? itemInfo.baleSize : 1) || 1;
-
-                if (field === 'rate') {
-                    // Changed Price per Kg -> Update Package Price
-                    const valNum = parseFloat(value);
-                    if (value !== '' && !isNaN(valNum)) {
-                        currentDetails.packageRate = valNum * size;
-                    } else {
-                        currentDetails.packageRate = '';
-                    }
-                } else if (field === 'packageRate') {
-                    // Changed Package Price -> Update Price per Kg
-                    const valNum = parseFloat(value);
-                    if (value !== '' && !isNaN(valNum) && size > 0) {
-                         currentDetails.rate = valNum / size;
-                    } else {
-                         currentDetails.rate = '';
-                    }
-                }
             }
             
             return { ...prev, [itemId]: currentDetails };
@@ -129,25 +87,29 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                 continue;
             }
 
-            let totalKgForItem = 0;
-            if (itemDetailsFromState.packingType !== PackingType.Kg) {
-                totalKgForItem = item.quantity * itemDetailsFromState.baleSize;
-            } else { // PackingType.Kg
-                totalKgForItem = item.quantity;
-            }
-
-            const totalForeignAmount = totalKgForItem * rateAsNumber;
+            // Total Value = Quantity * Unit Rate
+            const totalForeignAmount = item.quantity * rateAsNumber;
             const itemValueInDollar = totalForeignAmount * details.conversionRate;
 
             updatedItems.push({ ...item, rate: rateAsNumber, currency: details.currency, conversionRate: details.conversionRate });
             totalItemValueInDollar += itemValueInDollar;
             
+            // COGS Calculation (Standard: Total Kg * Avg Production Price (per Kg))
+            let totalKgForItem = 0;
+            if (itemDetailsFromState.packingType !== PackingType.Kg) {
+                totalKgForItem = item.quantity * itemDetailsFromState.baleSize;
+            } else {
+                totalKgForItem = item.quantity;
+            }
             const cogsForItem = totalKgForItem * itemDetailsFromState.avgProductionPrice;
             totalCOGS += cogsForItem;
         }
         
-        const freightAmountNum = Number(freightAmount) || 0;
-        const customChargesNum = Number(customCharges) || 0;
+        // Retrieve costs directly from the invoice object (entered during creation)
+        const freightAmountNum = (selectedInvoice.freightAmount || 0) * (selectedInvoice.freightConversionRate || 1);
+        const customChargesNum = (selectedInvoice.customCharges || 0) * (selectedInvoice.customChargesConversionRate || 1);
+        const freightForwarderId = selectedInvoice.freightForwarderId;
+
         const totalInvoiceValueInDollar = totalItemValueInDollar + freightAmountNum + customChargesNum;
         
         const customer = state.customers.find(c => c.id === selectedInvoice.customerId);
@@ -252,9 +214,6 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
             ...selectedInvoice,
             items: updatedItems,
             status: InvoiceStatus.Posted,
-            freightForwarderId: freightForwarderId || undefined,
-            freightAmount: freightAmountNum > 0 ? freightAmountNum : undefined,
-            customCharges: customChargesNum > 0 ? customChargesNum : undefined,
         };
 
         actions.push({ type: 'UPDATE_ENTITY', payload: { entity: 'salesInvoices', data: updatedInvoice } });
@@ -264,9 +223,6 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
         alert(`Invoice ${selectedInvoice.id} posted successfully and journal entries created.`);
         setSelectedInvoice(null);
         setItemDetails({});
-        setFreightForwarderId('');
-        setFreightAmount('');
-        setCustomCharges('');
     };
     
     const customerName = (id: string) => state.customers.find(c => c.id === id)?.name || 'N/A';
@@ -295,14 +251,13 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                 <th className="p-3 font-semibold text-slate-600 text-right">Package Size</th>
                                 <th className="p-3 font-semibold text-slate-600 text-right">Total Kg</th>
                                 <th className="p-3 font-semibold text-slate-600 w-48">Currency & Exchange Rate</th>
-                                <th className="p-3 font-semibold text-slate-600 w-32">Package Price</th>
-                                <th className="p-3 font-semibold text-slate-600 w-32">Price (per Kg)</th>
+                                <th className="p-3 font-semibold text-slate-600 w-32">Rate</th>
                                 <th className="p-3 font-semibold text-slate-600 text-right">Total Worth</th>
                             </tr>
                         </thead>
                         <tbody>
                             {selectedInvoice.items.map(item => {
-                                const details = itemDetails[item.itemId] || { rate: '', packageRate: '', currency: Currency.Dollar, conversionRate: 1 };
+                                const details = itemDetails[item.itemId] || { rate: '', currency: Currency.Dollar, conversionRate: 1 };
                                 const itemDetailsFromState = state.items.find(i => i.id === item.itemId);
                                 const category = state.categories.find(c => c.id === itemDetailsFromState?.categoryId)?.name || 'N/A';
                                 const isPackage = itemDetailsFromState && itemDetailsFromState.packingType !== PackingType.Kg;
@@ -320,7 +275,12 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                 }
 
                                 const rateAsNumber = Number(details.rate) || 0;
-                                const totalWorth = totalKgForItem * rateAsNumber;
+                                // UPDATED LOGIC: Worth = Qty * Rate
+                                const totalWorth = item.quantity * rateAsNumber;
+
+                                // Dynamic placeholder based on unit
+                                const ratePlaceholder = isPackage ? "/ Unit" : "/ Kg";
+
                                 return (
                                 <tr key={item.itemId} className="border-b">
                                     <td className="p-3 text-slate-700">{itemName(item.itemId)}</td>
@@ -338,21 +298,11 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                     <td className="p-3">
                                         <input
                                             type="number"
-                                            value={details.packageRate}
-                                            onChange={e => handleItemDetailChange(item.itemId, 'packageRate', e.target.value)}
-                                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                                            placeholder={`Pkg Price`}
-                                            min="0.01"
-                                            step="0.01"
-                                        />
-                                    </td>
-                                    <td className="p-3">
-                                        <input
-                                            type="number"
                                             value={details.rate}
-                                            disabled={true}
-                                            className="w-full p-2 border border-slate-300 rounded-md bg-slate-200 text-slate-500 cursor-not-allowed text-right"
-                                            placeholder={`/ Kg`}
+                                            onChange={e => handleItemDetailChange(item.itemId, 'rate', e.target.value)}
+                                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                                            placeholder={ratePlaceholder}
+                                            step="any"
                                         />
                                     </td>
                                     <td className="p-3 text-slate-700 text-right font-medium">
@@ -363,43 +313,30 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                         </tbody>
                     </table>
                 </div>
-                 <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6 border-t pt-6">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Freight Forwarder</label>
-                        <select 
-                            value={freightForwarderId} 
-                            onChange={(e) => setFreightForwarderId(e.target.value)}
-                            className="mt-1 w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                        >
-                            <option value="">Select...</option>
-                            {state.freightForwarders.map(ff => (
-                                <option key={ff.id} value={ff.id}>{ff.name}</option>
-                            ))}
-                        </select>
+                
+                {/* Display Read-Only Costs if they exist on the Invoice */}
+                {(selectedInvoice.freightAmount || selectedInvoice.customCharges) && (
+                    <div className="mt-6 p-4 bg-slate-50 rounded-md border border-slate-200">
+                        <h4 className="text-sm font-bold text-slate-700 mb-3">Additional Costs (From Invoice)</h4>
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                            {selectedInvoice.freightAmount && (
+                                <div>
+                                    <span className="text-slate-500 block">Freight ({selectedInvoice.freightCurrency})</span>
+                                    <span className="font-medium text-slate-800">{selectedInvoice.freightAmount.toFixed(2)}</span>
+                                    <span className="text-xs text-slate-400 ml-2">(Rate: {selectedInvoice.freightConversionRate})</span>
+                                </div>
+                            )}
+                            {selectedInvoice.customCharges && (
+                                <div>
+                                    <span className="text-slate-500 block">Customs Charges ({selectedInvoice.customChargesCurrency})</span>
+                                    <span className="font-medium text-slate-800">{selectedInvoice.customCharges.toFixed(2)}</span>
+                                    <span className="text-xs text-slate-400 ml-2">(Rate: {selectedInvoice.customChargesConversionRate})</span>
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-1">Freight Amount ($)</label>
-                        <input 
-                            type="number"
-                            value={freightAmount}
-                            onChange={(e) => setFreightAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                            className="mt-1 w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500 disabled:bg-slate-200"
-                            placeholder="0.00"
-                            disabled={!freightForwarderId}
-                        />
-                    </div>
-                    <div>
-                        <h4 className="text-sm font-medium text-slate-700 mb-1">Custom Charges</h4>
-                        <label className="sr-only">Custom Charges Amount ($)</label>
-                        <input 
-                            type="number"
-                            value={customCharges}
-                            onChange={(e) => setCustomCharges(e.target.value === '' ? '' : Number(e.target.value))}
-                            className="mt-1 w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="Amount ($)"
-                        />
-                    </div>
-                </div>
+                )}
+
                  <div className="flex justify-end mt-6">
                     <button onClick={handlePostInvoice} className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
                         Save & Post Invoice
@@ -432,7 +369,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                             unpostedInvoices.map(invoice => (
                                 <tr key={invoice.id} className="border-b hover:bg-slate-50">
                                     <td className="p-3 text-slate-700">{invoice.id}</td>
-                                    <td className="p-3 text-slate-700">{customerName(invoice.customerId)}</td>
+                                    <td className="p-3 text-slate-700">{state.customers.find(c => c.id === invoice.customerId)?.name || invoice.customerId}</td>
                                     <td className="p-3 text-slate-700">{invoice.date}</td>
                                     <td className="p-3 text-right">
                                         <button onClick={() => handleSelectInvoice(invoice)} className="py-1 px-3 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600">

@@ -179,6 +179,7 @@ const NewVoucherForm: React.FC<NewVoucherFormProps> = ({ userProfile, showNotifi
                     { label: 'Loan Accounts', entities: state.loanAccounts },
                     { label: 'Capital Accounts', entities: state.capitalAccounts },
                     { label: 'Investment Accounts', entities: state.investmentAccounts },
+                    { label: 'Payable Accounts', entities: state.payableAccounts },
                 ],
                 cashBankLabel: 'From Account',
                 cashBankOptions: [ ...state.cashAccounts, ...state.banks.map(b => ({ id: b.id, name: b.accountTitle })) ],
@@ -342,7 +343,7 @@ const NewVoucherForm: React.FC<NewVoucherFormProps> = ({ userProfile, showNotifi
             } else if (state.employees.some(e => e.id === fromToAccount)) {
                  entityType = 'employee';
             } else {
-                // It's likely a direct account (Loan, Capital, Investment)
+                // It's likely a direct account (Loan, Capital, Investment, OR Payable Account like Customs Charges)
                 debitAccount = fromToAccount;
                 entityId = undefined;
                 entityType = undefined;

@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportFilters from './ReportFilters.tsx';
@@ -21,14 +22,8 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
     const handlePrint = () => window.print();
 
     const calculateItemValue = (item: InvoiceItem) => {
-        const itemDetails = state.items.find(i => i.id === item.itemId);
-        if (!itemDetails || !item.rate) return 0;
-
-        if (itemDetails.packingType === PackingType.Bales) {
-            const totalKg = item.quantity * itemDetails.baleSize;
-            return totalKg * item.rate;
-        }
-        return item.quantity * item.rate;
+        // UPDATED Logic: Rate is per Unit (Package).
+        return item.quantity * (item.rate || 0);
     };
     
     const grandTotal = invoice.items.reduce((sum, item) => sum + calculateItemValue(item), 0);
@@ -54,7 +49,7 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
                         <tr className="bg-slate-50">
                             <th className="p-2 font-semibold text-slate-600">Item</th>
                             <th className="p-2 font-semibold text-slate-600 text-right">Quantity</th>
-                            <th className="p-2 font-semibold text-slate-600 text-right">Rate (per Kg)</th>
+                            <th className="p-2 font-semibold text-slate-600 text-right">Rate</th>
                             <th className="p-2 font-semibold text-slate-600 text-right">Total</th>
                         </tr>
                     </thead>
@@ -166,14 +161,8 @@ export const DetailedSalesReport: React.FC = () => {
                 const subDivision = state.subDivisions.find(sd => sd.id === customer?.subDivisionId);
 
                 const rate = item.rate || 0;
-                let totalValue = 0;
-                if (itemDetails) {
-                    if (itemDetails.packingType === PackingType.Bales) {
-                        totalValue = item.quantity * itemDetails.baleSize * rate;
-                    } else {
-                        totalValue = item.quantity * rate;
-                    }
-                }
+                // UPDATED LOGIC: Total Value = Qty * Rate (Rate is Unit Price)
+                const totalValue = item.quantity * rate;
 
                 return {
                         id: inv.id, date: inv.date, customerId: inv.customerId, customerName: customer?.name || 'N/A', divisionId: customer?.divisionId, divisionName: division?.name || 'N/A', subDivisionId: customer?.subDivisionId, subDivisionName: subDivision?.name || 'N/A',
@@ -185,8 +174,6 @@ export const DetailedSalesReport: React.FC = () => {
                 })
         });
 
-        // FIX: Component was missing JSX return and default export.
-        // The logic was also incomplete. Now it filters, sorts and returns data.
         let filteredData = flattenedData;
         if (!isInitialLoad) {
              filteredData = flattenedData.filter(row => 

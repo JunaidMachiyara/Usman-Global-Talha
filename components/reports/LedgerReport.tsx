@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportFilters from './ReportFilters.tsx';
@@ -21,14 +22,8 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
     const handlePrint = () => window.print();
 
     const calculateItemValue = (item: InvoiceItem) => {
-        const itemDetails = state.items.find(i => i.id === item.itemId);
-        if (!itemDetails || !item.rate) return 0;
-
-        if (itemDetails.packingType === PackingType.Bales) {
-            const totalKg = item.quantity * itemDetails.baleSize;
-            return totalKg * item.rate;
-        }
-        return item.quantity * item.rate;
+        // UPDATED LOGIC: Value = Qty * Rate (Per Unit)
+        return item.quantity * (item.rate || 0);
     };
     
     const itemsTotal = invoice.items.reduce((sum, item) => sum + calculateItemValue(item), 0);
@@ -55,7 +50,7 @@ const SalesInvoiceViewModal: React.FC<{ invoiceId: string; onClose: () => void; 
                         <tr className="bg-slate-50">
                             <th className="p-2 font-semibold text-slate-600">Item</th>
                             <th className="p-2 font-semibold text-slate-600 text-right">Quantity</th>
-                            <th className="p-2 font-semibold text-slate-600 text-right">Rate (per Kg)</th>
+                            <th className="p-2 font-semibold text-slate-600 text-right">Rate</th>
                             <th className="p-2 font-semibold text-slate-600 text-right">Total</th>
                         </tr>
                     </thead>
