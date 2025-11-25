@@ -42,7 +42,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
             
             let packageRate: number | '' = '';
             if (itemInfo) {
-                const isPackage = [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemInfo.packingType);
+                const isPackage = itemInfo.packingType !== PackingType.Kg;
                 // For Kg items, size is 1, so packageRate = ratePerKg * 1
                 const size = isPackage ? (itemInfo.baleSize || 1) : 1;
                 if (ratePerKg !== '' && size > 0) {
@@ -82,7 +82,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
             } else {
                 (currentDetails as any)[field] = value;
 
-                const isPackage = itemInfo && [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemInfo.packingType);
+                const isPackage = itemInfo && itemInfo.packingType !== PackingType.Kg;
                 const size = (isPackage ? itemInfo.baleSize : 1) || 1;
 
                 if (field === 'rate') {
@@ -130,7 +130,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
             }
 
             let totalKgForItem = 0;
-            if (itemDetailsFromState.packingType === PackingType.Bales || itemDetailsFromState.packingType === PackingType.Sacks) {
+            if (itemDetailsFromState.packingType !== PackingType.Kg) {
                 totalKgForItem = item.quantity * itemDetailsFromState.baleSize;
             } else { // PackingType.Kg
                 totalKgForItem = item.quantity;
@@ -305,7 +305,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                 const details = itemDetails[item.itemId] || { rate: '', packageRate: '', currency: Currency.Dollar, conversionRate: 1 };
                                 const itemDetailsFromState = state.items.find(i => i.id === item.itemId);
                                 const category = state.categories.find(c => c.id === itemDetailsFromState?.categoryId)?.name || 'N/A';
-                                const isPackage = itemDetailsFromState && [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemDetailsFromState.packingType);
+                                const isPackage = itemDetailsFromState && itemDetailsFromState.packingType !== PackingType.Kg;
                                 
                                 // Display 1 for Kg items, actual size for Packages
                                 const packageSizeDisplay = isPackage ? itemDetailsFromState.baleSize : 1;
@@ -344,16 +344,14 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                             placeholder={`Pkg Price`}
                                             min="0.01"
                                             step="0.01"
-                                            // Enabled for all (Kg items will treat this as Price per 1 Kg)
                                         />
                                     </td>
                                     <td className="p-3">
                                         <input
                                             type="number"
                                             value={details.rate}
-                                            // Disabled to force entry via Package Price (as requested)
-                                            disabled
-                                            className="w-full p-2 border border-slate-300 rounded-md bg-slate-100 text-slate-500 cursor-not-allowed text-right"
+                                            disabled={true}
+                                            className="w-full p-2 border border-slate-300 rounded-md bg-slate-200 text-slate-500 cursor-not-allowed text-right"
                                             placeholder={`/ Kg`}
                                         />
                                     </td>

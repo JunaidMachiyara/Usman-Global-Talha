@@ -430,7 +430,7 @@ const Dashboard: React.FC<DashboardProps> = ({ setModule }) => {
             return acc;
         }, {} as Record<string, { name: string; value: number; dateObj: Date }>);
 
-        return Object.values(grouped).sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+        return Object.values(grouped).sort((a: any, b: any) => a.dateObj.getTime() - b.dateObj.getTime());
     }, [state.salesInvoices, state.items]);
 
     const handleShortcutClick = (reportKey: string) => {
