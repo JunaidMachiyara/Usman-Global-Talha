@@ -1,7 +1,8 @@
+
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportToolbar from './ReportToolbar.tsx';
-import { OriginalPurchased, PackingType, Currency, Production, Item } from '../../types.ts';
+import { OriginalPurchased, PackingType, Currency, Production, Item, OriginalOpening } from '../../types.ts';
 import Modal from '../ui/Modal.tsx';
 
 // ... ModalDrilldownItem interface ...
@@ -33,7 +34,10 @@ const OriginalCombinationReport: React.FC = () => {
         setFilters(prev => ({ ...prev, [filterName]: value }));
     };
 
-    const productionsInPeriod = useMemo(() => state.productions.filter(p => p.date >= filters.startDate && p.date <= filters.endDate), [filters.startDate, filters.endDate, state.productions]);
+    // Filter out negative productions (Bales Opening / Consumption)
+    const productionsInPeriod = useMemo(() => 
+        state.productions.filter(p => p.date >= filters.startDate && p.date <= filters.endDate && p.quantityProduced > 0), 
+    [filters.startDate, filters.endDate, state.productions]);
 
     const {
         openedOriginals,
@@ -56,66 +60,152 @@ const OriginalCombinationReport: React.FC = () => {
             if (currency === Currency.Dollar) return amount;
             return amount * conversionRate;
         };
-        
-        // --- Average cost calculation for raw materials ---
-        const avgCostPerKg: { [originalTypeId: string]: number } = {};
-        const costMap: { [originalTypeId: string]: { totalKg: number; totalCost: number } } = {};
-        state.originalPurchases.forEach((p: OriginalPurchased) => {
-             // ... (existing logic is fine for raw materials) ...
-            const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
-            if (!originalType) return;
 
-            const purchaseKg = originalType.packingType === PackingType.Kg 
-                ? p.quantityPurchased 
-                : p.quantityPurchased * originalType.packingSize;
+        // --- 0. Pre-calculate Global Averages for Fallback ---
+        // This handles cases where Openings are dated before Purchases (negative inventory scenarios)
+        const globalAvgRates: Record<string, number> = {};
+        const globalTotals: Record<string, { qty: number, cost: number }> = {};
 
-            const foreignAmount = purchaseKg * p.rate; 
-            
-            const itemValueUSD = convertToUSD(foreignAmount, p.currency, p.conversionRate);
-            
-            const freightUSD = convertToUSD(p.freightAmount || 0, p.freightCurrency || Currency.Dollar, p.freightConversionRate || 1);
-            const clearingUSD = convertToUSD(p.clearingAmount || 0, p.clearingCurrency || Currency.Dollar, p.clearingConversionRate || 1);
-            const commissionUSD = convertToUSD(p.commissionAmount || 0, p.commissionCurrency || Currency.Dollar, p.commissionConversionRate || 1);
+        state.originalPurchases.forEach(p => {
+             const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
+             if (!originalType) return;
+             
+             const qty = originalType.packingType === PackingType.Kg 
+                    ? p.quantityPurchased 
+                    : p.quantityPurchased * originalType.packingSize;
+             
+             const itemValueUSD = convertToUSD(p.quantityPurchased * p.rate, p.currency, p.conversionRate || 1);
+             const freightUSD = convertToUSD(p.freightAmount || 0, p.freightCurrency || Currency.Dollar, p.freightConversionRate || 1);
+             const clearingUSD = convertToUSD(p.clearingAmount || 0, p.clearingCurrency || Currency.Dollar, p.clearingConversionRate || 1);
+             const commissionUSD = convertToUSD(p.commissionAmount || 0, p.commissionCurrency || Currency.Dollar, p.commissionConversionRate || 1);
+             const discountSurchargeUSD = p.discountSurcharge || 0;
 
-            const purchaseCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD;
-            
-            if (!costMap[p.originalTypeId]) {
-                costMap[p.originalTypeId] = { totalKg: 0, totalCost: 0 };
-            }
-            if (purchaseKg > 0) {
-              costMap[p.originalTypeId].totalKg += purchaseKg;
-              costMap[p.originalTypeId].totalCost += purchaseCostUSD;
-            }
+             const totalCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD + discountSurchargeUSD;
+
+             if (!globalTotals[p.originalTypeId]) globalTotals[p.originalTypeId] = { qty: 0, cost: 0 };
+             globalTotals[p.originalTypeId].qty += qty;
+             globalTotals[p.originalTypeId].cost += totalCostUSD;
         });
-        for (const typeId in costMap) {
-            if (costMap[typeId].totalKg > 0) {
-                avgCostPerKg[typeId] = costMap[typeId].totalCost / costMap[typeId].totalKg;
+
+        for(const id in globalTotals) {
+            if (globalTotals[id].qty > 0) {
+                globalAvgRates[id] = globalTotals[id].cost / globalTotals[id].qty;
             }
         }
-        // ... (Original Opened logic is fine) ...
+        
+        // --- 1. Moving Weighted Average Cost Calculation (Chronological) ---
+        const timeline = [
+            ...state.originalPurchases.map(p => ({ type: 'PURCHASE', date: p.date, data: p })),
+            ...state.originalOpenings.map(o => ({ type: 'OPENING', date: o.date, data: o }))
+        ].sort((a, b) => {
+            const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+            if (dateDiff !== 0) return dateDiff;
+            return a.type === 'PURCHASE' ? -1 : 1;
+        });
+
+        const inventoryState: Record<string, { currentQty: number; currentValue: number }> = {};
+        const openingTransactionCosts: Record<string, number> = {}; 
+        const currentAvgRates: Record<string, number> = {};
+
+        timeline.forEach(event => {
+            if (event.type === 'PURCHASE') {
+                const p = event.data as OriginalPurchased;
+                const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
+                if (!originalType) return;
+
+                const qty = originalType.packingType === PackingType.Kg 
+                    ? p.quantityPurchased 
+                    : p.quantityPurchased * originalType.packingSize;
+
+                const itemValueUSD = convertToUSD(p.quantityPurchased * p.rate, p.currency, p.conversionRate || 1);
+                const freightUSD = convertToUSD(p.freightAmount || 0, p.freightCurrency || Currency.Dollar, p.freightConversionRate || 1);
+                const clearingUSD = convertToUSD(p.clearingAmount || 0, p.clearingCurrency || Currency.Dollar, p.clearingConversionRate || 1);
+                const commissionUSD = convertToUSD(p.commissionAmount || 0, p.commissionCurrency || Currency.Dollar, p.commissionConversionRate || 1);
+                const discountSurchargeUSD = p.discountSurcharge || 0;
+
+                const totalCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD + discountSurchargeUSD;
+
+                if (!inventoryState[p.originalTypeId]) {
+                    inventoryState[p.originalTypeId] = { currentQty: 0, currentValue: 0 };
+                }
+
+                inventoryState[p.originalTypeId].currentQty += qty;
+                inventoryState[p.originalTypeId].currentValue += totalCostUSD;
+
+            } else {
+                const o = event.data as OriginalOpening;
+                if (!inventoryState[o.originalTypeId]) {
+                    inventoryState[o.originalTypeId] = { currentQty: 0, currentValue: 0 };
+                }
+
+                const stateItem = inventoryState[o.originalTypeId];
+                
+                // Calculate cost for this opening
+                let currentRate = 0;
+                
+                // Special handling for internal stock (Bales Opening)
+                if (o.supplierId === 'SUP-INTERNAL-STOCK' && o.originalTypeId.startsWith('OT-FROM-')) {
+                    const itemId = o.originalTypeId.replace('OT-FROM-', '');
+                    const item = state.items.find(i => i.id === itemId);
+                    if (item) currentRate = item.avgProductionPrice;
+                } else if (stateItem.currentQty > 0) {
+                    // Normal case: Use current moving average
+                    currentRate = stateItem.currentValue / stateItem.currentQty;
+                } else {
+                    // Negative stock fallback: Use last known rate -> global avg rate -> 0
+                    currentRate = currentAvgRates[o.originalTypeId] || globalAvgRates[o.originalTypeId] || 0; 
+                }
+                
+                if (currentRate > 0) {
+                    currentAvgRates[o.originalTypeId] = currentRate;
+                }
+
+                const costOfThisOpening = o.totalKg * currentRate;
+                openingTransactionCosts[o.id] = costOfThisOpening;
+
+                // Deduct from pool
+                stateItem.currentQty -= o.totalKg;
+                stateItem.currentValue -= costOfThisOpening;
+                
+                if (stateItem.currentQty <= 0.001) {
+                    stateItem.currentQty = 0;
+                    stateItem.currentValue = 0;
+                }
+            }
+        });
+
+
+        // --- 2. Calculate Report Data using the Time-Based Costs ---
         const openingsInPeriod = state.originalOpenings.filter(o => o.date >= filters.startDate && o.date <= filters.endDate);
         const totalOpenedKg = openingsInPeriod.reduce((sum, o) => sum + o.totalKg, 0);
 
-        const openedOriginalsAggregated: { [key: string]: { name: string; totalKg: number; totalWorth: number; avgPricePerKg: number; } } = {};
+        const openedOriginalsAggregated: { [key: string]: { name: string; totalKg: number; totalWorth: number; } } = {};
+        
         openingsInPeriod.forEach(opening => {
              const originalType = state.originalTypes.find(ot => ot.id === opening.originalTypeId);
             if (originalType) {
                 if (!openedOriginalsAggregated[originalType.id]) {
-                    openedOriginalsAggregated[originalType.id] = { name: originalType.name, totalKg: 0, totalWorth: 0, avgPricePerKg: avgCostPerKg[originalType.id] || 0 };
+                    openedOriginalsAggregated[originalType.id] = { name: originalType.name, totalKg: 0, totalWorth: 0 };
                 }
-                const worth = opening.totalKg * (avgCostPerKg[originalType.id] || 0);
+                
+                // Use the precise historical cost calculated above
+                const worth = openingTransactionCosts[opening.id] || 0;
+
                 openedOriginalsAggregated[originalType.id].totalKg += opening.totalKg;
                 openedOriginalsAggregated[originalType.id].totalWorth += worth;
             }
         });
+
         const openedOriginals = Object.values(openedOriginalsAggregated).map(agg => ({
             ...agg,
             percentage: totalOpenedKg > 0 ? (agg.totalKg / totalOpenedKg) * 100 : 0,
+            avgPricePerKg: agg.totalKg > 0 ? agg.totalWorth / agg.totalKg : 0, 
         }));
+        
         const totalOpenedWorth = openedOriginals.reduce((sum, o) => sum + o.totalWorth, 0);
 
 
-        // --- 2. Finished Goods Produced (UPDATED LOGIC) ---
+        // --- 3. Finished Goods Produced ---
         const producedByCategoryAgg: { [key: string]: { name: string; totalKg: number; totalPWorth: number; totalSWorth: number } } = {};
         const producedBySectionAgg: { [key: string]: { name: string; totalKg: number; totalPWorth: number; totalSWorth: number } } = {};
         let totalProducedKg = 0;
@@ -126,8 +216,6 @@ const OriginalCombinationReport: React.FC = () => {
                 const producedKg = prod.quantityProduced * (item.packingType !== PackingType.Kg ? item.baleSize : 1);
                 totalProducedKg += producedKg;
 
-                // UPDATED: For Bales/Sacks, price is per Unit. For Kg, price is per Kg.
-                // Qty * Unit Price (Bales) OR Qty * Kg Price (Kg)
                 const productionWorth = prod.quantityProduced * item.avgProductionPrice;
                 const salesWorth = prod.quantityProduced * item.avgSalesPrice;
 
@@ -173,7 +261,7 @@ const OriginalCombinationReport: React.FC = () => {
         const totalProducedSWorth = producedItemsByCategory.reduce((s, i) => s + i.totalSWorth, 0);
 
 
-        // --- 3. Summary Calculations ---
+        // --- 4. Summary Calculations ---
         const costOfOriginalUsed = totalOpenedWorth;
         const workingCost = totalOpenedKg * workingCostRate;
         const garbageProduction = productionsInPeriod.find(p => p.itemId === 'GRBG-001');
@@ -195,7 +283,7 @@ const OriginalCombinationReport: React.FC = () => {
 
     }, [filters, workingCostRate, state, productionsInPeriod]);
 
-    // ... (rest of the component UI remains the same, logic changes were confined to useMemo) ...
+    // ... (rest of the component UI remains the same) ...
     const handleCategoryClick = (categoryName: string) => {
         const rawItems = productionsInPeriod
             .map(p => { const item = state.items.find(i => i.id === p.itemId); return { production: p, item }; })
@@ -214,7 +302,6 @@ const OriginalCombinationReport: React.FC = () => {
         const items: ModalDrilldownItem[] = rawItems.map(({ production, item }) => {
             const totalKg = production.quantityProduced * (item!.packingType !== PackingType.Kg ? item!.baleSize : 1);
             const priceToUse = filters.priceType === 'sales' ? item!.avgSalesPrice : item!.avgProductionPrice;
-            // UPDATED: Worth = Qty * Unit Price
             const totalWorth = production.quantityProduced * priceToUse;
             const percentage = totalKgForCategory > 0 ? (totalKg / totalKgForCategory) * 100 : 0;
             return { id: item!.id, name: item!.name, quantity: production.quantityProduced, totalKg, avgPricePerKg: priceToUse, totalWorth, percentage };
@@ -243,7 +330,6 @@ const OriginalCombinationReport: React.FC = () => {
             const production = data.production;
             const totalKg = production.quantityProduced * (item.packingType !== PackingType.Kg ? item.baleSize : 1);
             const priceToUse = filters.priceType === 'sales' ? item.avgSalesPrice : item.avgProductionPrice;
-            // UPDATED: Worth = Qty * Unit Price
             const totalWorth = production.quantityProduced * priceToUse;
             const percentage = totalKgForSection > 0 ? (totalKg / totalKgForSection) * 100 : 0;
             return { id: item.id, name: item.name, quantity: production.quantityProduced, totalKg, avgPricePerKg: priceToUse, totalWorth, percentage };
@@ -256,7 +342,6 @@ const OriginalCombinationReport: React.FC = () => {
     const formatCurrency = (val: number) => val.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     
     return (
-        // ... (UI Return remains the same) ...
         <div className="report-print-area">
             <ReportToolbar
                 title="Original Combination Report"
@@ -294,7 +379,7 @@ const OriginalCombinationReport: React.FC = () => {
                 <div className="lg:w-1/2 flex flex-col space-y-8">
                     {/* Originals Opened */}
                     <div>
-                        <h3 className="text-lg font-bold text-slate-700 mb-2">Originals Opened</h3>
+                        <h3 className="text-lg font-bold text-slate-700 mb-2">Originals Opened (Cost by Moving Avg)</h3>
                         <div className="overflow-x-auto border rounded-md">
                             <table className="w-full text-left table-auto text-sm">
                                 <thead>

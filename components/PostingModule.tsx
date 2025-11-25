@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { SalesInvoice, InvoiceStatus, InvoiceItem, JournalEntry, JournalEntryType, PackingType, Currency, Module, UserProfile } from '../types.ts';
@@ -42,6 +43,7 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
             let packageRate: number | '' = '';
             if (itemInfo) {
                 const isPackage = [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemInfo.packingType);
+                // For Kg items, size is 1, so packageRate = ratePerKg * 1
                 const size = isPackage ? (itemInfo.baleSize || 1) : 1;
                 if (ratePerKg !== '' && size > 0) {
                     packageRate = Number(ratePerKg) * size;
@@ -304,8 +306,9 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                 const itemDetailsFromState = state.items.find(i => i.id === item.itemId);
                                 const category = state.categories.find(c => c.id === itemDetailsFromState?.categoryId)?.name || 'N/A';
                                 const isPackage = itemDetailsFromState && [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags].includes(itemDetailsFromState.packingType);
-                                const packageSize = isPackage ? itemDetailsFromState.baleSize : 1;
-                                const packageSizeDisplay = isPackage ? itemDetailsFromState.baleSize : 'N/A';
+                                
+                                // Display 1 for Kg items, actual size for Packages
+                                const packageSizeDisplay = isPackage ? itemDetailsFromState.baleSize : 1;
                                 
                                 let totalKgForItem = 0;
                                 if (itemDetailsFromState) {
@@ -341,18 +344,17 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
                                             placeholder={`Pkg Price`}
                                             min="0.01"
                                             step="0.01"
-                                            disabled={!isPackage}
+                                            // Enabled for all (Kg items will treat this as Price per 1 Kg)
                                         />
                                     </td>
                                     <td className="p-3">
                                         <input
                                             type="number"
                                             value={details.rate}
-                                            onChange={e => handleItemDetailChange(item.itemId, 'rate', e.target.value)}
-                                            className="w-full p-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                                            // Disabled to force entry via Package Price (as requested)
+                                            disabled
+                                            className="w-full p-2 border border-slate-300 rounded-md bg-slate-100 text-slate-500 cursor-not-allowed text-right"
                                             placeholder={`/ Kg`}
-                                            min="0.01"
-                                            step="0.01"
                                         />
                                     </td>
                                     <td className="p-3 text-slate-700 text-right font-medium">

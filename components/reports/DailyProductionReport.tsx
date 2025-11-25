@@ -1,8 +1,9 @@
+
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportFilters from './ReportFilters.tsx';
 import ReportToolbar from './ReportToolbar.tsx';
-import { PackingType, Currency, OriginalPurchased } from '../../types.ts';
+import { PackingType, Currency, OriginalPurchased, OriginalOpening } from '../../types.ts';
 
 const DailyProductionReport: React.FC = () => {
     const { state } = useData();
@@ -19,60 +20,141 @@ const DailyProductionReport: React.FC = () => {
     // Helper to format currency
     const formatCurrency = (val: number) => val.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
-    // 1. Calculate Weighted Average Cost per Original Type to value the openings
-    const avgCostPerKg = useMemo(() => {
-        const costMap: { [originalTypeId: string]: { totalKg: number; totalCost: number } } = {};
-        
-        state.originalPurchases.forEach((p: OriginalPurchased) => {
-             // ... (no changes to Raw Material Cost logic) ...
-            const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
-            if (!originalType) return;
+    // 1. Calculate Weighted Average Cost using Moving Average Logic
+    // This replays the entire history to determine the cost of goods *at the moment* they were used on the target date.
+    const dailyOpeningCosts = useMemo(() => {
+        const convertToUSD = (amount: number, currency: Currency, conversionRate: number) => {
+            if (currency === Currency.Dollar) return amount;
+            return amount * conversionRate;
+        };
 
-            const purchaseKg = originalType.packingType === PackingType.Kg 
-                ? p.quantityPurchased 
-                : p.quantityPurchased * originalType.packingSize;
+        // --- 0. Pre-calculate Global Averages for Fallback ---
+        const globalAvgRates: Record<string, number> = {};
+        const globalTotals: Record<string, { qty: number, cost: number }> = {};
 
-            // Calculate Landed Cost in USD
-            const itemValueUSD = (p.quantityPurchased * p.rate) * (p.conversionRate || 1);
-            const freightUSD = (p.freightAmount || 0) * (p.freightConversionRate || 1);
-            const clearingUSD = (p.clearingAmount || 0) * (p.clearingConversionRate || 1);
-            const commissionUSD = (p.commissionAmount || 0) * (p.commissionConversionRate || 1);
-            const discountSurchargeUSD = p.discountSurcharge || 0;
+        state.originalPurchases.forEach(p => {
+             const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
+             if (!originalType) return;
+             
+             const qty = originalType.packingType === PackingType.Kg 
+                    ? p.quantityPurchased 
+                    : p.quantityPurchased * originalType.packingSize;
+             
+             const itemValueUSD = convertToUSD(p.quantityPurchased * p.rate, p.currency, p.conversionRate || 1);
+             const freightUSD = convertToUSD(p.freightAmount || 0, p.freightCurrency || Currency.Dollar, p.freightConversionRate || 1);
+             const clearingUSD = convertToUSD(p.clearingAmount || 0, p.clearingCurrency || Currency.Dollar, p.clearingConversionRate || 1);
+             const commissionUSD = convertToUSD(p.commissionAmount || 0, p.commissionCurrency || Currency.Dollar, p.commissionConversionRate || 1);
+             const discountSurchargeUSD = p.discountSurcharge || 0;
 
-            const purchaseCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD + discountSurchargeUSD;
-            
-            if (!costMap[p.originalTypeId]) {
-                costMap[p.originalTypeId] = { totalKg: 0, totalCost: 0 };
+             const totalCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD + discountSurchargeUSD;
+
+             if (!globalTotals[p.originalTypeId]) globalTotals[p.originalTypeId] = { qty: 0, cost: 0 };
+             globalTotals[p.originalTypeId].qty += qty;
+             globalTotals[p.originalTypeId].cost += totalCostUSD;
+        });
+
+        for(const id in globalTotals) {
+            if (globalTotals[id].qty > 0) {
+                globalAvgRates[id] = globalTotals[id].cost / globalTotals[id].qty;
             }
-            if (purchaseKg > 0) {
-              costMap[p.originalTypeId].totalKg += purchaseKg;
-              costMap[p.originalTypeId].totalCost += purchaseCostUSD;
+        }
+
+        // --- 1. Replay History ---
+        const timeline = [
+            ...state.originalPurchases.map(p => ({ type: 'PURCHASE', date: p.date, data: p })),
+            ...state.originalOpenings.map(o => ({ type: 'OPENING', date: o.date, data: o }))
+        ].sort((a, b) => {
+            const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+            if (dateDiff !== 0) return dateDiff;
+            return a.type === 'PURCHASE' ? -1 : 1;
+        });
+
+        const inventoryState: Record<string, { currentQty: number; currentValue: number }> = {};
+        const costsOnTargetDate: Record<string, number> = {}; // Map openingId -> Calculated Cost
+        const currentAvgRates: Record<string, number> = {};
+
+        timeline.forEach(event => {
+            if (event.type === 'PURCHASE') {
+                const p = event.data as OriginalPurchased;
+                const originalType = state.originalTypes.find(ot => ot.id === p.originalTypeId);
+                if (!originalType) return;
+
+                const qty = originalType.packingType === PackingType.Kg 
+                    ? p.quantityPurchased 
+                    : p.quantityPurchased * originalType.packingSize;
+
+                const itemValueUSD = convertToUSD(p.quantityPurchased * p.rate, p.currency, p.conversionRate || 1);
+                const freightUSD = convertToUSD(p.freightAmount || 0, p.freightCurrency || Currency.Dollar, p.freightConversionRate || 1);
+                const clearingUSD = convertToUSD(p.clearingAmount || 0, p.clearingCurrency || Currency.Dollar, p.clearingConversionRate || 1);
+                const commissionUSD = convertToUSD(p.commissionAmount || 0, p.commissionCurrency || Currency.Dollar, p.commissionConversionRate || 1);
+                const discountSurchargeUSD = p.discountSurcharge || 0;
+
+                const totalCostUSD = itemValueUSD + freightUSD + clearingUSD + commissionUSD + discountSurchargeUSD;
+
+                if (!inventoryState[p.originalTypeId]) {
+                    inventoryState[p.originalTypeId] = { currentQty: 0, currentValue: 0 };
+                }
+
+                inventoryState[p.originalTypeId].currentQty += qty;
+                inventoryState[p.originalTypeId].currentValue += totalCostUSD;
+
+            } else {
+                const o = event.data as OriginalOpening;
+                if (!inventoryState[o.originalTypeId]) {
+                    inventoryState[o.originalTypeId] = { currentQty: 0, currentValue: 0 };
+                }
+
+                const stateItem = inventoryState[o.originalTypeId];
+                let currentRate = 0;
+                
+                // Handle internal stock (Bales Opening)
+                if (o.supplierId === 'SUP-INTERNAL-STOCK' && o.originalTypeId.startsWith('OT-FROM-')) {
+                    const itemId = o.originalTypeId.replace('OT-FROM-', '');
+                    const item = state.items.find(i => i.id === itemId);
+                    if (item) currentRate = item.avgProductionPrice;
+                } else if (stateItem.currentQty > 0) {
+                    currentRate = stateItem.currentValue / stateItem.currentQty;
+                } else {
+                    // Fallback to global average or last known rate
+                    currentRate = currentAvgRates[o.originalTypeId] || globalAvgRates[o.originalTypeId] || 0;
+                }
+                
+                if (currentRate > 0) {
+                    currentAvgRates[o.originalTypeId] = currentRate;
+                }
+
+                const costOfThisOpening = o.totalKg * currentRate;
+                
+                // If this opening happened on the target date, store its cost
+                if (o.date === filters.date) {
+                    costsOnTargetDate[o.id] = costOfThisOpening;
+                }
+
+                stateItem.currentQty -= o.totalKg;
+                stateItem.currentValue -= costOfThisOpening;
+                
+                if (stateItem.currentQty <= 0.001) {
+                    stateItem.currentQty = 0;
+                    stateItem.currentValue = 0;
+                }
             }
         });
 
-        const avgs: { [typeId: string]: number } = {};
-        for (const typeId in costMap) {
-            if (costMap[typeId].totalKg > 0) {
-                avgs[typeId] = costMap[typeId].totalCost / costMap[typeId].totalKg;
-            }
-        }
-        return avgs;
-    }, [state.originalPurchases, state.originalTypes]);
+        return costsOnTargetDate;
+    }, [state.originalPurchases, state.originalOpenings, state.originalTypes, filters.date]);
 
-    // 2. Calculate Total Worth of Original Opened on selected date
+    // 2. Calculate Total Worth of Original Opened on selected date using Moving Avg Costs
     const totalOriginalOpenedWorth = useMemo(() => {
-        return state.originalOpenings
-            .filter(o => o.date === filters.date)
-            .reduce((sum, o) => {
-                const costPerKg = avgCostPerKg[o.originalTypeId] || 0;
-                return sum + (o.totalKg * costPerKg);
-            }, 0);
-    }, [filters.date, state.originalOpenings, avgCostPerKg]);
+        const openings = state.originalOpenings.filter(o => o.date === filters.date);
+        // Sum up the pre-calculated costs for these specific opening IDs
+        return openings.reduce((sum, o) => sum + (dailyOpeningCosts[o.id] || 0), 0);
+    }, [filters.date, state.originalOpenings, dailyOpeningCosts]);
 
     // 3. Prepare Report Data with Production Worth
     const reportData = useMemo(() => {
         return state.productions
-            .filter(p => p.date === filters.date)
+            // Filter out negative productions (Bales Opening)
+            .filter(p => p.date === filters.date && p.quantityProduced > 0)
             .map(p => {
                 const item = state.items.find(i => i.id === p.itemId);
                 const packageTypesWithSize = [PackingType.Bales, PackingType.Sacks, PackingType.Box, PackingType.Bags];
@@ -159,6 +241,7 @@ const DailyProductionReport: React.FC = () => {
                     <div className="bg-white p-3 rounded-md border border-slate-200 shadow-sm min-w-[200px]">
                         <p className="text-xs font-semibold text-slate-500 uppercase">Original Opened Worth</p>
                         <p className="text-lg font-bold text-amber-600">{formatCurrency(totalOriginalOpenedWorth)}</p>
+                        <p className="text-xs text-slate-400 mt-1">Calculated via Moving Avg Cost</p>
                     </div>
                     <div className="bg-white p-3 rounded-md border border-slate-200 shadow-sm min-w-[200px]">
                         <p className="text-xs font-semibold text-slate-500 uppercase">Finished Goods Worth</p>

@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { useData } from '../../context/DataContext.tsx';
 import ReportFilters from './ReportFilters.tsx';
@@ -19,7 +20,8 @@ const SectionProductionReport: React.FC = () => {
     };
 
     const reportData = useMemo(() => {
-        const productionsInPeriod = state.productions.filter(p => p.date >= filters.startDate && p.date <= filters.endDate);
+        // UPDATED: Filter out negative productions (Bales Opening / Consumption)
+        const productionsInPeriod = state.productions.filter(p => p.date >= filters.startDate && p.date <= filters.endDate && p.quantityProduced > 0);
 
         const dataBySection: { [sectionId: string]: { name: string; totalBales: number; totalKg: number; uniqueItems: Set<string> } } = {};
 

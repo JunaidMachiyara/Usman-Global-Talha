@@ -199,6 +199,39 @@ const AnalyticsDashboard: React.FC = () => {
             .sort((a, b) => b.value - a.value);
     }, [state.items, state.productions, state.salesInvoices, state.categories]);
 
+    const revenueTrendData = useMemo(() => {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const relevantInvoices = state.salesInvoices.filter(inv =>
+            inv.status === InvoiceStatus.Posted &&
+            new Date(inv.date) >= thirtyDaysAgo
+        );
+
+        const grouped = relevantInvoices.reduce((acc, inv) => {
+            const dateObj = new Date(inv.date);
+            const key = `${dateObj.getDate()} ${dateObj.toLocaleString('default', { month: 'short' })}`;
+
+            if (!acc[key]) {
+                acc[key] = { name: key, value: 0, dateObj };
+            }
+
+            const invTotal = inv.items.reduce((sum, item) => {
+                const itemDetails = state.items.find(i => i.id === item.itemId);
+                let quantity = item.quantity;
+                if (itemDetails?.packingType === PackingType.Bales) {
+                    quantity = item.quantity * (itemDetails.baleSize || 0);
+                }
+                return sum + (quantity * (item.rate || 0) * (item.conversionRate || 1));
+            }, 0);
+
+            acc[key].value += invTotal + (inv.freightAmount || 0) * (inv.freightConversionRate || 1) + (inv.customCharges || 0) * (inv.customChargesConversionRate || 1);
+            return acc;
+        }, {} as Record<string, { name: string; value: number; dateObj: Date }>);
+
+        return Object.values(grouped).sort((a: any, b: any) => a.dateObj.getTime() - b.dateObj.getTime());
+    }, [state.salesInvoices, state.items]);
+
     // --- Utils ---
     const formatCurrency = (val: number) => {
         if (val >= 1000000) return `$${(val / 1000000).toFixed(2)}M`;
@@ -464,6 +497,50 @@ const AnalyticsDashboard: React.FC = () => {
                                 </div>
                             ))}
                         </div>
+                    </div>
+                </div>
+
+                {/* Fourth Row: Sales Revenue Trend (Area Chart) */}
+                <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+                    <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                        <div className="w-2 h-6 bg-teal-500 rounded-sm"></div>
+                        Sales Revenue Trend (Last 30 Days)
+                    </h3>
+                    <div className="h-80 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={revenueTrendData}>
+                                <defs>
+                                    <linearGradient id="colorSalesRevenue" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#1E40AF" stopOpacity={0.8}/>
+                                        <stop offset="95%" stopColor="#1E40AF" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" />
+                                <XAxis 
+                                    dataKey="name" 
+                                    stroke="#94a3b8" 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{fill: '#94a3b8', fontSize: 12}} 
+                                    dy={10}
+                                />
+                                <YAxis 
+                                    stroke="#94a3b8" 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{fill: '#94a3b8', fontSize: 12}} 
+                                    tickFormatter={(value) => `$${value}`} 
+                                    width={80}
+                                />
+                                <Tooltip 
+                                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
+                                    itemStyle={{ color: '#e2e8f0' }}
+                                    labelStyle={{ color: '#94a3b8', marginBottom: '5px' }}
+                                    formatter={(value: number) => [`$${value.toLocaleString()}`, 'Revenue']}
+                                />
+                                <Area type="monotone" dataKey="value" stroke="#1E40AF" strokeWidth={2} fillOpacity={1} fill="url(#colorSalesRevenue)" />
+                            </AreaChart>
+                        </ResponsiveContainer>
                     </div>
                 </div>
 
