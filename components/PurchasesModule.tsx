@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { 
-    OriginalPurchased, FinishedGoodsPurchase, FinishedGoodsPurchaseItem, Supplier, OriginalType, 
+    OriginalPurchased, FinishedGoodsPurchase, FinishedGoodsPurchaseItem, Supplier, OriginalType, OriginalTypeWithWeight,
     Item, PackingType, Currency, JournalEntry, JournalEntryType, AppState, UserProfile 
 } from '../types.ts';
 import { generateFinishedGoodsPurchaseId, generateOriginalPurchaseId } from '../utils/idGenerator.ts';
@@ -103,6 +103,10 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
     const [freightCurrencyData, setFreightCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
     const [clearingCurrencyData, setClearingCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
     const [commissionCurrencyData, setCommissionCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
+    const [originalTypes, setOriginalTypes] = useState<OriginalTypeWithWeight[]>([]);
+    const [currentOriginalTypeId, setCurrentOriginalTypeId] = useState('');
+    const [currentWeight, setCurrentWeight] = useState<number | ''>('');
+    const [currentRate, setCurrentRate] = useState<number | ''>('');
 
     const [purchaseToSave, setPurchaseToSave] = useState<OriginalPurchased | null>(null);
     const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
@@ -197,9 +201,68 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
     const handleCurrencyChange = (newCurrency: { currency: Currency; conversionRate: number }) => {
         setFormData(prev => ({ ...prev, ...newCurrency }));
     };
+
+    const handleAddOriginalType = () => {
+        if (!currentOriginalTypeId || !currentWeight || Number(currentWeight) <= 0 || !currentRate || Number(currentRate) <= 0) {
+            return;
+        }
+        
+        // Check if this original type is already added
+        if (originalTypes.some(ot => ot.originalTypeId === currentOriginalTypeId)) {
+            return;
+        }
+
+        setOriginalTypes([...originalTypes, { 
+            originalTypeId: currentOriginalTypeId, 
+            weight: Number(currentWeight),
+            rate: Number(currentRate)
+        }]);
+        setCurrentOriginalTypeId('');
+        setCurrentWeight('');
+        setCurrentRate('');
+    };
+
+    const handleRemoveOriginalType = (indexToRemove: number) => {
+        setOriginalTypes(originalTypes.filter((_, index) => index !== indexToRemove));
+    };
+
+    const handleUpdateOriginalTypeWeight = (indexToUpdate: number, newWeight: string) => {
+        const weightAsNumber = parseFloat(newWeight);
+        if (newWeight !== '' && (isNaN(weightAsNumber) || weightAsNumber <= 0)) {
+            return;
+        }
+
+        const updatedTypes = originalTypes.map((item, index) => {
+            if (index === indexToUpdate) {
+                return { ...item, weight: newWeight === '' ? 0 : weightAsNumber };
+            }
+            return item;
+        });
+        setOriginalTypes(updatedTypes);
+    };
+
+    const handleUpdateOriginalTypeRate = (indexToUpdate: number, newRate: string) => {
+        const rateAsNumber = parseFloat(newRate);
+        if (newRate !== '' && (isNaN(rateAsNumber) || rateAsNumber <= 0)) {
+            return;
+        }
+
+        const updatedTypes = originalTypes.map((item, index) => {
+            if (index === indexToUpdate) {
+                return { ...item, rate: newRate === '' ? 0 : rateAsNumber };
+            }
+            return item;
+        });
+        setOriginalTypes(updatedTypes);
+    };
     
     const handlePrepareSummary = (e: React.FormEvent) => {
         e.preventDefault();
+
+        // Validate that at least one original type is selected
+        if (originalTypes.length === 0) {
+            return;
+        }
 
         const supplier = state.suppliers.find(s => s.id === formData.supplierId);
         const generatedId = generateOriginalPurchaseId(
@@ -212,6 +275,8 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
             id: generatedId,
             ...getInitialState(),
             ...formData,
+            originalTypes: originalTypes, // Use new array instead of single type
+            originalTypeId: originalTypes.length > 0 ? originalTypes[0].originalTypeId : '', // Keep for backward compatibility
             quantityPurchased: Number(formData.quantityPurchased) || 0,
             rate: Number(formData.rate) || 0,
             discountSurcharge: Number(formData.discountSurcharge) || 0,
@@ -256,8 +321,19 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
         const jeDate = purchaseToSave.date;
         const baseDescription = `Purchase from ${state.suppliers.find(s => s.id === purchaseToSave.supplierId)?.name}`;
         
-        const itemValueFC = purchaseToSave.quantityPurchased * purchaseToSave.rate;
-        const itemValueUSD = (itemValueFC * (purchaseToSave.conversionRate || 1)) + (purchaseToSave.discountSurcharge || 0);
+        // Handle journal entries for multiple original types
+        let itemValueFC = 0;
+        let itemValueUSD = 0;
+        
+        if (purchaseToSave.originalTypes && purchaseToSave.originalTypes.length > 0) {
+            // Calculate from multiple types (new format)
+            itemValueFC = purchaseToSave.originalTypes.reduce((sum, ot) => sum + (ot.weight * ot.rate), 0);
+            itemValueUSD = (itemValueFC * (purchaseToSave.conversionRate || 1)) + (purchaseToSave.discountSurcharge || 0);
+        } else {
+            // Fallback to old format for backward compatibility
+            itemValueFC = purchaseToSave.quantityPurchased * purchaseToSave.rate;
+            itemValueUSD = (itemValueFC * (purchaseToSave.conversionRate || 1)) + (purchaseToSave.discountSurcharge || 0);
+        }
 
         const purchaseDebit: JournalEntry = { id: `je-d-${purchaseToSave.id}`, voucherId: `JV-${purchaseToSave.id}`, date: jeDate, entryType: JournalEntryType.Journal, account: 'EXP-004', debit: itemValueUSD, credit: 0, description: baseDescription };
         const supplierCredit: JournalEntry = { 
@@ -326,7 +402,128 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
                             </select>
                         </div>
                         <div><label className="block text-sm font-medium text-slate-700">Batch Number</label><input type="text" name="batchNumber" value={formData.batchNumber} onChange={handleChange} disabled className={`${inputClasses} bg-slate-200`}/></div>
-                        <div><label className="block text-sm font-medium text-slate-700">Original Type</label><select name="originalTypeId" value={formData.originalTypeId} onChange={handleChange} required className={`${inputClasses}`}><option value="">Select Type</option>{state.originalTypes.map(ot => <option key={ot.id} value={ot.id}>{ot.name}</option>)}</select></div>
+                <div className="border rounded-lg p-4 bg-white">
+                    <h3 className="text-lg font-semibold text-slate-800 mb-4 border-b pb-2">Original Types & Weights</h3>
+                    <div className="space-y-4">
+                        {/* Add Original Type Form */}
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-3 bg-slate-50 rounded-md">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Original Type</label>
+                                <select 
+                                    value={currentOriginalTypeId} 
+                                    onChange={(e) => setCurrentOriginalTypeId(e.target.value)} 
+                                    className="w-full p-2 rounded-md border border-slate-300"
+                                >
+                                    <option value="">Select Type</option>
+                                    {state.originalTypes.map(ot => (
+                                        <option key={ot.id} value={ot.id} disabled={originalTypes.some(x => x.originalTypeId === ot.id)}>
+                                            {ot.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Weight (Kg)</label>
+                                <input 
+                                    type="number" 
+                                    value={currentWeight} 
+                                    onChange={(e) => setCurrentWeight(e.target.value === '' ? '' : Number(e.target.value))}
+                                    placeholder="Enter weight"
+                                    className="w-full p-2 rounded-md border border-slate-300"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Rate</label>
+                                <input 
+                                    type="number" 
+                                    step="any"
+                                    value={currentRate} 
+                                    onChange={(e) => setCurrentRate(e.target.value === '' ? '' : Number(e.target.value))}
+                                    placeholder="Enter rate"
+                                    className="w-full p-2 rounded-md border border-slate-300"
+                                />
+                            </div>
+                            <div className="flex items-end">
+                                <button 
+                                    type="button"
+                                    onClick={handleAddOriginalType}
+                                    disabled={!currentOriginalTypeId || !currentWeight || Number(currentWeight) <= 0 || !currentRate || Number(currentRate) <= 0}
+                                    className="w-full py-2 px-4 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-slate-300 font-medium"
+                                >
+                                    Add Type
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Display Added Original Types */}
+                        {originalTypes.length > 0 ? (
+                            <div className="overflow-x-auto border rounded-md">
+                                <table className="w-full text-left table-auto">
+                                    <thead>
+                                        <tr className="bg-slate-100">
+                                            <th className="p-3 font-semibold text-slate-600">Original Type</th>
+                                            <th className="p-3 font-semibold text-slate-600 text-right">Weight (Kg)</th>
+                                            <th className="p-3 font-semibold text-slate-600 text-right">Rate</th>
+                                            <th className="p-3 font-semibold text-slate-600 text-right">Total Amount</th>
+                                            <th className="p-3 font-semibold text-slate-600 text-right">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {originalTypes.map((item, index) => {
+                                            const typeDetails = state.originalTypes.find(ot => ot.id === item.originalTypeId);
+                                            const totalAmount = item.weight * item.rate;
+                                            return (
+                                                <tr key={index} className="border-b hover:bg-slate-50">
+                                                    <td className="p-3 text-slate-700">{typeDetails?.name || item.originalTypeId}</td>
+                                                    <td className="p-3 text-slate-700 text-right">
+                                                        <input
+                                                            type="number"
+                                                            value={item.weight}
+                                                            onChange={(e) => handleUpdateOriginalTypeWeight(index, e.target.value)}
+                                                            className="w-24 p-2 rounded-md text-right border border-slate-300"
+                                                        />
+                                                    </td>
+                                                    <td className="p-3 text-slate-700 text-right">
+                                                        <input
+                                                            type="number"
+                                                            step="any"
+                                                            value={item.rate}
+                                                            onChange={(e) => handleUpdateOriginalTypeRate(index, e.target.value)}
+                                                            className="w-28 p-2 rounded-md text-right border border-slate-300"
+                                                        />
+                                                    </td>
+                                                    <td className="p-3 text-slate-700 text-right font-medium">{totalAmount.toFixed(2)}</td>
+                                                    <td className="p-3 text-right">
+                                                        <button 
+                                                            type="button"
+                                                            onClick={() => handleRemoveOriginalType(index)}
+                                                            className="text-red-600 hover:text-red-800 font-semibold text-sm"
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr className="bg-slate-50 font-semibold">
+                                            <td className="p-3 text-slate-700">Totals</td>
+                                            <td className="p-3 text-slate-700 text-right">{originalTypes.reduce((sum, ot) => sum + ot.weight, 0).toFixed(2)} Kg</td>
+                                            <td className="p-3"></td>
+                                            <td className="p-3 text-slate-700 text-right">{originalTypes.reduce((sum, ot) => sum + (ot.weight * ot.rate), 0).toFixed(2)}</td>
+                                            <td className="p-3"></td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="text-center p-6 bg-slate-50 rounded-md border-2 border-dashed border-slate-300">
+                                <p className="text-slate-500">No original types added yet. Add at least one type above.</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
                         <div>
                             <label className="block text-sm font-medium text-slate-700">Original Product</label>
                             <select name="originalProductId" value={formData.originalProductId} onChange={handleChange} disabled={!formData.originalTypeId || availableOriginalProducts.length === 0} className={`${inputClasses}`}>
@@ -390,7 +587,7 @@ const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selecte
                     </div>
                 </div>
 
-                <div className="flex justify-end"><button type="submit" disabled={!formData.supplierId} className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300">Finalize Purchase</button></div>
+                <div className="flex justify-end"><button type="submit" disabled={!formData.supplierId || originalTypes.length === 0} className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300">Finalize Purchase</button></div>
             </form>
 
             {purchaseToSave && (
@@ -466,14 +663,27 @@ const PurchaseSummaryModal: React.FC<PurchaseSummaryModalProps> = ({ isOpen, onC
 };
 
 const PrintablePurchaseVoucher: React.FC<{ purchase: OriginalPurchased, state: AppState }> = ({ purchase, state }) => {
-    const { supplierId, originalTypeId, date, rate, quantityPurchased, currency, conversionRate, discountSurcharge } = purchase;
+    const { supplierId, originalTypeId, date, rate, quantityPurchased, currency, conversionRate, discountSurcharge, originalTypes } = purchase;
     const supplier = state.suppliers.find(s => s.id === supplierId);
     const subSupplier = state.subSuppliers.find(ss => ss.id === purchase.subSupplierId);
     const originalType = state.originalTypes.find(ot => ot.id === originalTypeId);
     const originalProduct = state.originalProducts.find(op => op.id === purchase.originalProductId);
     
-    const itemValueFC = quantityPurchased * rate;
-    const itemValueUSD = itemValueFC * (conversionRate || 1) + (discountSurcharge || 0);
+    // Check if we have multiple original types with weights and rates
+    const hasMultipleTypes = originalTypes && originalTypes.length > 0;
+    
+    let itemValueFC = 0;
+    let itemValueUSD = 0;
+
+    if (hasMultipleTypes && originalTypes) {
+        // Calculate from multiple types (new format)
+        itemValueFC = originalTypes.reduce((sum, ot) => sum + (ot.weight * ot.rate), 0);
+        itemValueUSD = itemValueFC * (conversionRate || 1) + (discountSurcharge || 0);
+    } else {
+        // Fallback to old format for backward compatibility
+        itemValueFC = quantityPurchased * rate;
+        itemValueUSD = itemValueFC * (conversionRate || 1) + (discountSurcharge || 0);
+    }
 
     const freightValueUSD = (purchase.freightAmount || 0) * (purchase.freightConversionRate || 1);
     const clearingValueUSD = (purchase.clearingAmount || 0) * (purchase.clearingConversionRate || 1);
@@ -497,24 +707,64 @@ const PrintablePurchaseVoucher: React.FC<{ purchase: OriginalPurchased, state: A
                 <p><strong>Batch No:</strong> {purchase.batchNumber}</p>
                 <p><strong>Container No:</strong> {purchase.containerNumber || 'N/A'}</p>
             </div>
-            <table className="w-full text-left my-4">
-                <thead className="border-b">
-                    <tr className="bg-slate-50">
-                        <th className="p-1 font-semibold text-slate-600">Description</th>
-                        <th className="p-1 font-semibold text-slate-600 text-right">Qty</th>
-                        <th className="p-1 font-semibold text-slate-600 text-right">Rate ({currency})</th>
-                        <th className="p-1 font-semibold text-slate-600 text-right">Total ({currency})</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td className="p-1 text-slate-800">{originalType?.name} {originalProduct ? `- ${originalProduct.name}` : ''}</td>
-                        <td className="p-1 text-slate-800 text-right">{quantityPurchased.toLocaleString()}</td>
-                        <td className="p-1 text-slate-800 text-right">{rate.toFixed(2)}</td>
-                        <td className="p-1 text-slate-800 text-right">{itemValueFC.toFixed(2)}</td>
-                    </tr>
-                </tbody>
-            </table>
+            
+            {hasMultipleTypes && originalTypes && originalTypes.length > 0 ? (
+                <>
+                    <h3 className="font-semibold text-slate-800 mt-4 mb-2">Original Types & Weights</h3>
+                    <table className="w-full text-left my-4">
+                        <thead className="border-b">
+                            <tr className="bg-slate-50">
+                                <th className="p-1 font-semibold text-slate-600">Original Type</th>
+                                <th className="p-1 font-semibold text-slate-600 text-right">Weight (Kg)</th>
+                                <th className="p-1 font-semibold text-slate-600 text-right">Rate ({currency})</th>
+                                <th className="p-1 font-semibold text-slate-600 text-right">Total ({currency})</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {originalTypes.map((ot, idx) => {
+                                const typeDetail = state.originalTypes.find(x => x.id === ot.originalTypeId);
+                                const typeTotal = ot.weight * ot.rate;
+                                return (
+                                    <tr key={idx}>
+                                        <td className="p-1 text-slate-800">{typeDetail?.name || ot.originalTypeId} {originalProduct ? `- ${originalProduct.name}` : ''}</td>
+                                        <td className="p-1 text-slate-800 text-right">{ot.weight.toFixed(2)}</td>
+                                        <td className="p-1 text-slate-800 text-right">{ot.rate.toFixed(2)}</td>
+                                        <td className="p-1 text-slate-800 text-right">{typeTotal.toFixed(2)}</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                        <tfoot className="border-t">
+                            <tr className="bg-slate-50">
+                                <td className="p-1 font-semibold text-slate-700">Totals</td>
+                                <td className="p-1 font-semibold text-slate-700 text-right">{originalTypes.reduce((s, ot) => s + ot.weight, 0).toFixed(2)}</td>
+                                <td className="p-1"></td>
+                                <td className="p-1 font-semibold text-slate-700 text-right">{itemValueFC.toFixed(2)}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </>
+            ) : (
+                <table className="w-full text-left my-4">
+                    <thead className="border-b">
+                        <tr className="bg-slate-50">
+                            <th className="p-1 font-semibold text-slate-600">Description</th>
+                            <th className="p-1 font-semibold text-slate-600 text-right">Qty</th>
+                            <th className="p-1 font-semibold text-slate-600 text-right">Rate ({currency})</th>
+                            <th className="p-1 font-semibold text-slate-600 text-right">Total ({currency})</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td className="p-1 text-slate-800">{originalType?.name} {originalProduct ? `- ${originalProduct.name}` : ''}</td>
+                            <td className="p-1 text-slate-800 text-right">{quantityPurchased.toLocaleString()}</td>
+                            <td className="p-1 text-slate-800 text-right">{rate.toFixed(2)}</td>
+                            <td className="p-1 text-slate-800 text-right">{itemValueFC.toFixed(2)}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            )}
+            
             {costs.length > 0 && (<>
                 <h4 className="font-semibold mt-2 text-slate-800">Additional Costs</h4>
                 <table className="w-full text-left my-2 text-xs">

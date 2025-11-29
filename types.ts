@@ -256,13 +256,20 @@ export interface OriginalOpening {
     transactionId?: string;
 }
 
+export interface OriginalTypeWithWeight {
+    originalTypeId: string;
+    weight: number; // Weight in Kg for this original type
+    rate: number; // Rate for this original type (in selected currency)
+}
+
 export interface OriginalPurchased {
     id: string;
     date: string;
     supplierId: string;
     subSupplierId?: string;
-    originalTypeId: string;
+    originalTypeId?: string; // Deprecated: kept for backward compatibility, use originalTypes array instead
     originalProductId?: string;
+    originalTypes?: OriginalTypeWithWeight[]; // New: array of original types with weights
     quantityPurchased: number;
     rate: number; // In selected currency
     currency: Currency;

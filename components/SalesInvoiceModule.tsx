@@ -370,17 +370,12 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             return;
         }
 
-        // LOGIC: Rate entered is per Unit (Package or Kg). 
-        // If user leaves rate blank, default to avgSalesPrice from item.
-        // If item is Bale, avgSalesPrice might be Per Kg in setup.
-        let defaultRate = itemDetails.avgSalesPrice;
-        if (itemDetails.packingType !== PackingType.Kg && itemDetails.baleSize > 0) {
-             // Assuming avgSalesPrice in Item Setup is PER KG.
-             // So default Package Rate = AvgSalesPrice * BaleSize
-             defaultRate = itemDetails.avgSalesPrice * itemDetails.baleSize;
-        }
+        // LOGIC: Rate entered is per Unit (Package or Kg).
+        // avgSalesPrice is ALREADY per Package/Unit (Bale, Box, Sack, Bag, or Kg).
+        // Do NOT multiply by baleSize - that's only the Kg weight of the package.
+        const defaultRate = itemDetails.avgSalesPrice;
 
-        // If user entered a rate, use it directly. If not, use calculated default.
+        // If user entered a rate, use it directly. If not, use avgSalesPrice.
         const rateToUse = Number(currentRate) > 0 ? Number(currentRate) : defaultRate;
 
         setCurrentInvoiceItems([...currentInvoiceItems, { 
@@ -528,6 +523,21 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         });
         setCurrentInvoiceItems(updatedItems as (Omit<InvoiceItem, "quantity"> & { quantity: number | ""; })[]);
     };
+
+    const handleRateChange = (indexToUpdate: number, newRate: string) => {
+        const rateAsNumber = parseFloat(newRate);
+        if (newRate !== '' && (isNaN(rateAsNumber) || rateAsNumber < 0)) {
+            return;
+        }
+
+        const updatedItems = currentInvoiceItems.map((item, index) => {
+            if (index === indexToUpdate) {
+                return { ...item, rate: newRate === '' ? 0 : rateAsNumber };
+            }
+            return item;
+        });
+        setCurrentInvoiceItems(updatedItems as (Omit<InvoiceItem, "quantity"> & { quantity: number | ""; })[]);
+    };
     
     const handleEditInvoice = (invoice: SalesInvoice) => {
         setEditingInvoice(invoice);
@@ -553,21 +563,10 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         setCommissionAmount(invoice.commissionAmount || '');
         setCommissionCurrencyData({ currency: invoice.commissionCurrency || Currency.Dollar, conversionRate: invoice.commissionConversionRate || 1 });
 
-        setCurrentInvoiceItems(invoice.items.map(i => {
-            const itemDetails = state.items.find(item => item.id === i.itemId);
-            
-            // If rate is not present in invoice (legacy), calculate default
-            let defaultRate = itemDetails?.avgSalesPrice;
-            if (itemDetails?.packingType !== PackingType.Kg && itemDetails?.baleSize) {
-                defaultRate = (itemDetails.avgSalesPrice || 0) * itemDetails.baleSize;
-            }
-
-            return {
-                ...i, 
-                quantity: i.quantity,
-                rate: i.rate ?? defaultRate,
-            };
-        }));
+        setCurrentInvoiceItems(invoice.items.map(i => ({
+            ...i, 
+            quantity: i.quantity,
+        })));
         setSubModule('new');
     };
 
@@ -579,10 +578,16 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         if (itemDetails) {
             if (itemDetails.packingType === PackingType.Bales) {
                 rateLabel = "Rate (per Bale)";
-                placeholder = `Avg: ${itemDetails.avgSalesPrice * itemDetails.baleSize}`;
+                placeholder = `Avg: ${itemDetails.avgSalesPrice}`;
             } else if (itemDetails.packingType === PackingType.Sacks) {
                 rateLabel = "Rate (per Sack)";
-                placeholder = `Avg: ${itemDetails.avgSalesPrice * itemDetails.baleSize}`;
+                placeholder = `Avg: ${itemDetails.avgSalesPrice}`;
+            } else if (itemDetails.packingType === PackingType.Box) {
+                rateLabel = "Rate (per Box)";
+                placeholder = `Avg: ${itemDetails.avgSalesPrice}`;
+            } else if (itemDetails.packingType === PackingType.Bags) {
+                rateLabel = "Rate (per Bag)";
+                placeholder = `Avg: ${itemDetails.avgSalesPrice}`;
             } else {
                 rateLabel = "Rate (per Kg)";
                 placeholder = `Avg: ${itemDetails.avgSalesPrice}`;
@@ -717,10 +722,12 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                                     <div className="relative">
                                                         <input
                                                             type="number"
+                                                            step="0.01"
                                                             value={item.rate ?? ''}
-                                                            className="w-full p-2 pr-16 rounded-md bg-slate-100 text-slate-500 text-right"
+                                                            onChange={e => handleRateChange(index, e.target.value)}
+                                                            className="w-full p-2 pr-16 rounded-md border border-slate-300 text-right hover:border-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                                                             aria-label={`Rate for ${itemDetails?.name}`}
-                                                            disabled
+                                                            placeholder="0.00"
                                                         />
                                                         <span className="absolute inset-y-0 right-0 flex items-center pr-3 text-sm text-slate-500 pointer-events-none">{unitLabel} {currency}</span>
                                                     </div>
