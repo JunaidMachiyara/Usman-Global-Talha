@@ -332,8 +332,10 @@ const dataReducer = (state: AppState, action: Action): AppState => {
             );
         case 'ADD_ENTITY': {
             const { entity, data } = action.payload;
+            console.log('📥 DataContext: ADD_ENTITY received', { entity, data, currentCount: (state[entity] as Entity[]).length });
             const entityArray = state[entity] as Entity[];
             const newState = { ...state, [entity]: [...entityArray, data] };
+            console.log('✅ DataContext: Entity added', { entity, newCount: newState[entity].length });
             if (entity === 'salesInvoices') newState.nextInvoiceNumber = state.nextInvoiceNumber + 1;
             if (entity === 'ongoingOrders') newState.nextOngoingOrderNumber = state.nextOngoingOrderNumber + 1;
             if (entity === 'originalPurchases') newState.nextOriginalPurchaseNumber = state.nextOriginalPurchaseNumber + 1;

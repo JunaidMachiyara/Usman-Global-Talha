@@ -835,6 +835,8 @@ const CrudManager = <T extends Entity & { id: string, name?: string, fullName?: 
         if (!currentItem) return;
         setError(null);
 
+        console.log('=== SAVE STARTED ===', { entityName, currentItem });
+
         // Create a new object and parse all number fields from string to number
         const itemToSave = { ...currentItem };
         for (const field of fields) {
@@ -862,9 +864,11 @@ const CrudManager = <T extends Entity & { id: string, name?: string, fullName?: 
         if (entityName === 'items') {
             const itemData = itemToSave as unknown as Item;
             if (itemData.packingType !== PackingType.Kg && (!itemData.baleSize || itemData.baleSize <= 0)) {
+                console.error('❌ VALIDATION FAILED: Packing Size required', { packingType: itemData.packingType, baleSize: itemData.baleSize });
                 setError(`Packing Size is required and must be greater than 0 when Packing Type is ${itemData.packingType}.`);
                 return;
             }
+            console.log('✅ Item validation passed', itemData);
         }
         
         if (entityName === 'originalTypes') {
@@ -1108,7 +1112,9 @@ const CrudManager = <T extends Entity & { id: string, name?: string, fullName?: 
                 }
             }
 
+            console.log('🚀 DISPATCHING ADD_ENTITY', { entity: entityName, data: newItem });
             dispatch({ type: 'ADD_ENTITY', payload: { entity: entityName, data: newItem as T } });
+            console.log('✅ ADD_ENTITY dispatched successfully');
 
             // Handle Item Opening Stock
             if (entityName === 'items') {
@@ -1160,6 +1166,7 @@ const CrudManager = <T extends Entity & { id: string, name?: string, fullName?: 
             }
             handleOpeningBalance(newItem as T, undefined, true);
         }
+        console.log('🎉 SAVE COMPLETED', { entityName, success: true });
         showNotification(isEditing ? `${title.slice(0, -1)} updated successfully!` : `${title.slice(0, -1)} created successfully!`);
         onSaveSuccess();
         handleCloseModal();
