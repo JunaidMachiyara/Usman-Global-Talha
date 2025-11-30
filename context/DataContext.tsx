@@ -493,6 +493,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const isUpdatingFromFirestore = useRef(false);
     const firestoreUnsubscribe = useRef<(() => void) | null>(null);
     const isLocalChange = useRef(false);
+    const saveDebounceTimer = useRef<NodeJS.Timeout | null>(null);
 
     const wrappedDispatch: React.Dispatch<Action> = (action) => {
         isLocalChange.current = true;
@@ -512,8 +513,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             firestoreUnsubscribe.current = db.doc(FIRESTORE_DOC_PATH).onSnapshot(
                 (doc: any) => {
+                    console.log('📡 onSnapshot fired (dev mode)', { isLocalChange: isLocalChange.current });
                     if (isLocalChange.current) {
-                        isLocalChange.current = false;
+                        console.log('⏭️ Skipped - local change in progress');
                         return;
                     }
                     if (doc.exists) {
@@ -589,8 +591,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
                         firestoreUnsubscribe.current = db.doc(FIRESTORE_DOC_PATH).onSnapshot(
                             (doc: any) => {
-                                 if (isLocalChange.current) {
-                                    isLocalChange.current = false;
+                                console.log('📡 onSnapshot fired (auth mode)', { isLocalChange: isLocalChange.current });
+                                if (isLocalChange.current) {
+                                    console.log('⏭️ Skipped - local change in progress');
                                     return;
                                 }
                                 if (doc.exists) {
@@ -664,19 +667,33 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             return;
         }
         
-        const saveData = async () => {
-            setSaveStatus('saving');
+        // Clear existing timer
+        if (saveDebounceTimer.current) {
+            clearTimeout(saveDebounceTimer.current);
+        }
+        
+        setSaveStatus('saving');
+        
+        // Debounce save by 500ms to batch rapid changes
+        saveDebounceTimer.current = setTimeout(async () => {
             try {
+                console.log('💾 Saving to Firestore...', { itemsCount: state.items?.length || 0 });
                 const sanitizedState = convertUndefinedToNull(state);
                 await db.doc(FIRESTORE_DOC_PATH).set(sanitizedState);
                 setSaveStatus('synced');
+                console.log('✅ Firestore save complete');
+                
+                // Keep isLocalChange flag for 3 seconds after save completes
+                setTimeout(() => {
+                    isLocalChange.current = false;
+                    console.log('🔓 isLocalChange cleared after successful save');
+                }, 3000);
             } catch (error) {
                 console.error("Error writing to Firestore:", error);
                 setSaveStatus('error');
+                isLocalChange.current = false;
             }
-        };
-
-        saveData();
+        }, 500);
 
     }, [state, userProfile, isFirestoreLoaded]);
 
