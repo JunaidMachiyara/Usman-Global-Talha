@@ -6,6 +6,113 @@ import Modal from './ui/Modal.tsx';
 import AttendanceRegister from './AttendanceRegister.tsx';
 import SalaryCalculator from './SalaryCalculator.tsx';
 
+// CSV Export Helper Functions
+const downloadCSV = (filename: string, csvContent: string) => {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+};
+
+const escapeCSV = (value: any): string => {
+    if (value === null || value === undefined) return '';
+    const str = String(value);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+};
+
+const exportItemsCSV = (items: Item[], state: AppState) => {
+    const headers = ['id', 'name', 'category', 'section', 'packingType', 'weightPerUnit', 'avgCost', 'salePrice', 'stockQty', 'openingStock'];
+    const rows = items.map(item => [
+        item.id || '',
+        item.name || '',
+        item.categoryId || '', // REQUIRED
+        item.sectionId || '', // REQUIRED
+        item.packingType || '', // REQUIRED
+        item.baleSize || 0, // weightPerUnit - REQUIRED
+        item.avgProductionPrice || 0, // avgCost - REQUIRED
+        item.avgSalesPrice || 0, // salePrice
+        0, // stockQty - calculated from productions/sales
+        item.openingStock || 0
+    ]);
+    
+    const csvContent = [
+        headers.map(escapeCSV).join(','),
+        ...rows.map(row => row.map(escapeCSV).join(','))
+    ].join('\n');
+    
+    downloadCSV('items_export.csv', csvContent);
+};
+
+const exportPartnersCSV = (customers: Customer[], suppliers: Supplier[], state: AppState) => {
+    const headers = ['id', 'name', 'type', 'country', 'defaultCurrency', 'balance', 'divisionId', 'subDivisionId'];
+    
+    const customerRows = customers.map(c => [
+        c.id,
+        c.name,
+        'CUSTOMER',
+        '', // country
+        'USD', // defaultCurrency
+        c.startingBalance || 0,
+        c.divisionId || '',
+        '' // subDivisionId
+    ]);
+    
+    const supplierRows = suppliers.map(s => [
+        s.id,
+        s.name,
+        'SUPPLIER',
+        '', // country
+        s.defaultCurrency || 'USD',
+        s.startingBalance || 0,
+        '', // divisionId
+        '' // subDivisionId
+    ]);
+    
+    const allRows = [...customerRows, ...supplierRows];
+    
+    const csvContent = [
+        headers.map(escapeCSV).join(','),
+        ...allRows.map(row => row.map(escapeCSV).join(','))
+    ].join('\n');
+    
+    downloadCSV('partners_export.csv', csvContent);
+};
+
+const exportAccountsCSV = (state: AppState) => {
+    const headers = ['id', 'name', 'type', 'balance', 'description'];
+    
+    const accounts: any[] = [
+        ...state.banks.map(a => ({ id: a.id, name: a.accountTitle, type: 'ASSET', balance: a.startingBalance || 0, description: `Bank: ${a.accountNumber || ''}` })),
+        ...state.cashAccounts.map(a => ({ id: a.id, name: a.name, type: 'ASSET', balance: a.startingBalance || 0, description: 'Cash Account' })),
+        ...state.loanAccounts.map(a => ({ id: a.id, name: a.name, type: 'LIABILITY', balance: a.startingBalance || 0, description: 'Loan Account' })),
+        ...state.capitalAccounts.map(a => ({ id: a.id, name: a.name, type: 'EQUITY', balance: a.startingBalance || 0, description: 'Capital Account' })),
+        ...state.expenseAccounts.map(a => ({ id: a.id, name: a.name, type: 'EXPENSE', balance: a.startingBalance || 0, description: 'Expense Account' })),
+    ];
+    
+    const rows = accounts.map(a => [
+        a.id,
+        a.name,
+        a.type,
+        a.balance,
+        a.description
+    ]);
+    
+    const csvContent = [
+        headers.map(escapeCSV).join(','),
+        ...rows.map(row => row.map(escapeCSV).join(','))
+    ].join('\n');
+    
+    downloadCSV('accounts_export.csv', csvContent);
+};
+
 // START: Full-featured ExcelImportModal component
 type ImportableEntity = 'items' | 'customers' | 'suppliers' | 'commissionAgents' | 'freightForwarders' | 'clearingAgents' | 'divisions' | 'subDivisions' | 'loanAccounts' | 'expenseAccounts' | 'categories' | 'sections' | 'originalStock' | 'employees';
 
@@ -1626,16 +1733,57 @@ const SetupModule: React.FC<SetupModuleProps> = ({ userProfile, isModalMode = fa
             <div className="space-y-8">
                 <div className="bg-white p-6 rounded-lg shadow-md">
                     <h2 className="text-2xl font-bold text-slate-700 mb-4">Data Management</h2>
-                    <button 
-                        onClick={() => setImportModalConfig({ isOpen: true, entityName: 'originalStock' })} 
-                        className="px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 transition-colors text-sm font-semibold flex items-center space-x-2"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                        </svg>
-                        <span>Import Original Purchases</span>
-                    </button>
-                    <p className="text-xs text-slate-500 mt-2">Upload a CSV of previously purchased original/raw stock. This will create 'Original Purchase' records and the corresponding accounting entries.</p>
+                    
+                    {/* Import Button */}
+                    <div className="mb-4">
+                        <button 
+                            onClick={() => setImportModalConfig({ isOpen: true, entityName: 'originalStock' })} 
+                            className="px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 transition-colors text-sm font-semibold flex items-center space-x-2"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                            </svg>
+                            <span>Import Original Purchases</span>
+                        </button>
+                        <p className="text-xs text-slate-500 mt-2">Upload a CSV of previously purchased original/raw stock. This will create 'Original Purchase' records and the corresponding accounting entries.</p>
+                    </div>
+
+                    {/* Export Buttons */}
+                    <div className="border-t pt-4 mt-4">
+                        <h3 className="text-lg font-semibold text-slate-700 mb-3">Export Data (CSV)</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <button 
+                                onClick={() => exportItemsCSV(state.items, state)} 
+                                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm font-semibold flex items-center justify-center space-x-2"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <span>Export Items ({state.items.length})</span>
+                            </button>
+                            
+                            <button 
+                                onClick={() => exportPartnersCSV(state.customers, state.suppliers, state)} 
+                                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm font-semibold flex items-center justify-center space-x-2"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <span>Export Partners ({state.customers.length + state.suppliers.length})</span>
+                            </button>
+                            
+                            <button 
+                                onClick={() => exportAccountsCSV(state)} 
+                                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors text-sm font-semibold flex items-center justify-center space-x-2"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <span>Export Accounts</span>
+                            </button>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-2">Download CSV files for importing into another application. All required fields are included.</p>
+                    </div>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
                     <div className="space-y-8">
