@@ -109,8 +109,28 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
         const freightAmountNum = (selectedInvoice.freightAmount || 0) * (selectedInvoice.freightConversionRate || 1);
         const customChargesNum = (selectedInvoice.customCharges || 0) * (selectedInvoice.customChargesConversionRate || 1);
         const freightForwarderId = selectedInvoice.freightForwarderId;
+        
+        // Calculate discount (reduces invoice total)
+        let discountInUSD = 0;
+        if (selectedInvoice.discountAmount && selectedInvoice.discountAmount > 0) {
+            if (selectedInvoice.discountType === 'perKg') {
+                discountInUSD = (selectedInvoice.discountAmount * selectedInvoice.totalKg) * (selectedInvoice.discountConversionRate || 1);
+            } else {
+                discountInUSD = selectedInvoice.discountAmount * (selectedInvoice.discountConversionRate || 1);
+            }
+        }
+        
+        // Calculate surcharge (increases invoice total)
+        let surchargeInUSD = 0;
+        if (selectedInvoice.surchargeAmount && selectedInvoice.surchargeAmount > 0) {
+            if (selectedInvoice.surchargeType === 'perKg') {
+                surchargeInUSD = (selectedInvoice.surchargeAmount * selectedInvoice.totalKg) * (selectedInvoice.surchargeConversionRate || 1);
+            } else {
+                surchargeInUSD = selectedInvoice.surchargeAmount * (selectedInvoice.surchargeConversionRate || 1);
+            }
+        }
 
-        const totalInvoiceValueInDollar = totalItemValueInDollar + freightAmountNum + customChargesNum;
+        const totalInvoiceValueInDollar = totalItemValueInDollar + freightAmountNum + customChargesNum - discountInUSD + surchargeInUSD;
         
         const customer = state.customers.find(c => c.id === selectedInvoice.customerId);
         const voucherId = selectedInvoice.id;
@@ -189,6 +209,26 @@ const PostingModule: React.FC<PostingModuleProps> = ({ setModule, userProfile })
             };
             actions.push({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: commissionDebit } });
             actions.push({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: commissionCredit } });
+        }
+        
+        // Discount Journal Entries (reduces customer receivable, credits discount account)
+        if (discountInUSD > 0) {
+            const discountDesc = `Discount on INV-${selectedInvoice.id} (${selectedInvoice.discountType === 'perKg' ? `${selectedInvoice.discountAmount} per Kg` : 'Lump Sum'})`;
+            const discountDebit: JournalEntry = {
+                id: `je-d-disc-${selectedInvoice.id}`, voucherId, date: selectedInvoice.date, entryType: JournalEntryType.Journal, account: 'EXP-009',
+                debit: discountInUSD, credit: 0, description: discountDesc, createdBy
+            };
+            actions.push({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: discountDebit } });
+        }
+        
+        // Surcharge Journal Entries (increases customer receivable, credits surcharge revenue)
+        if (surchargeInUSD > 0) {
+            const surchargeDesc = `Surcharge on INV-${selectedInvoice.id} (${selectedInvoice.surchargeType === 'perKg' ? `${selectedInvoice.surchargeAmount} per Kg` : 'Lump Sum'})`;
+            const surchargeCredit: JournalEntry = {
+                id: `je-c-surch-${selectedInvoice.id}`, voucherId, date: selectedInvoice.date, entryType: JournalEntryType.Journal, account: 'REV-002',
+                debit: 0, credit: surchargeInUSD, description: surchargeDesc, createdBy
+            };
+            actions.push({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: surchargeCredit } });
         }
 
         // 5. Create COGS Journal Entries

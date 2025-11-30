@@ -327,7 +327,20 @@ export interface SalesInvoice {
     totalKg: number;
     divisionId?: string;
     subDivisionId?: string;
-    discountSurcharge?: number; // In USD
+    discountSurcharge?: number; // In USD - DEPRECATED, use discount/surcharge fields below
+    
+    // Discount (reduces invoice amount)
+    discountAmount?: number;
+    discountType?: 'perKg' | 'lumpsum';
+    discountCurrency?: Currency;
+    discountConversionRate?: number;
+    
+    // Surcharge (increases invoice amount)
+    surchargeAmount?: number;
+    surchargeType?: 'perKg' | 'lumpsum';
+    surchargeCurrency?: Currency;
+    surchargeConversionRate?: number;
+    
     sourceOrderId?: string; // Link back to the OngoingOrder
     containerNumber?: string;
     logoId?: string;

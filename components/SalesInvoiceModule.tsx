@@ -75,7 +75,27 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
     const clearingInUSD = (invoice.customCharges || 0) * (invoice.customChargesConversionRate || 1);
     const commissionInUSD = (invoice.commissionAmount || 0) * (invoice.commissionConversionRate || 1);
     
-    const grandTotal = itemsTotal + freightInUSD + clearingInUSD + commissionInUSD;
+    // Calculate discount (reduces total)
+    let discountInUSD = 0;
+    if (invoice.discountAmount && invoice.discountAmount > 0) {
+        if (invoice.discountType === 'perKg') {
+            discountInUSD = (invoice.discountAmount * invoice.totalKg) * (invoice.discountConversionRate || 1);
+        } else {
+            discountInUSD = invoice.discountAmount * (invoice.discountConversionRate || 1);
+        }
+    }
+    
+    // Calculate surcharge (increases total)
+    let surchargeInUSD = 0;
+    if (invoice.surchargeAmount && invoice.surchargeAmount > 0) {
+        if (invoice.surchargeType === 'perKg') {
+            surchargeInUSD = (invoice.surchargeAmount * invoice.totalKg) * (invoice.surchargeConversionRate || 1);
+        } else {
+            surchargeInUSD = invoice.surchargeAmount * (invoice.surchargeConversionRate || 1);
+        }
+    }
+    
+    const grandTotal = itemsTotal + freightInUSD + clearingInUSD + commissionInUSD - discountInUSD + surchargeInUSD;
     const currency = invoice.items.length > 0 ? (invoice.items[0].currency || Currency.Dollar) : Currency.Dollar;
 
     return (
@@ -146,6 +166,18 @@ const PrintableInvoiceContent: React.FC<{ invoice: SalesInvoice | null; state: A
                             <td className="p-2 text-right text-slate-800">{commissionInUSD.toFixed(2)}</td>
                         </tr>
                     )}
+                    {invoice.discountAmount && invoice.discountAmount > 0 && (
+                        <tr className="font-medium text-red-600">
+                            <td colSpan={3} className="p-2 text-right">Discount ({invoice.discountType === 'perKg' ? `${invoice.discountAmount} per Kg × ${invoice.totalKg} Kg` : 'Lump Sum'})</td>
+                            <td className="p-2 text-right">- {discountInUSD.toFixed(2)}</td>
+                        </tr>
+                    )}
+                    {invoice.surchargeAmount && invoice.surchargeAmount > 0 && (
+                        <tr className="font-medium text-green-600">
+                            <td colSpan={3} className="p-2 text-right">Surcharge ({invoice.surchargeType === 'perKg' ? `${invoice.surchargeAmount} per Kg × ${invoice.totalKg} Kg` : 'Lump Sum'})</td>
+                            <td className="p-2 text-right">+ {surchargeInUSD.toFixed(2)}</td>
+                        </tr>
+                    )}
                     <tr className="font-bold bg-slate-100">
                         <td colSpan={3} className="p-2 text-right text-slate-800">Grand Total ({currency})</td>
                         <td className="p-2 text-right text-slate-800">{grandTotal.toFixed(2)}</td>
@@ -179,6 +211,15 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     const [commissionAgentId, setCommissionAgentId] = useState('');
     const [commissionAmount, setCommissionAmount] = useState<number | ''>('');
     const [discountSurcharge, setDiscountSurcharge] = useState<number | ''>('');
+    
+    // Separate discount and surcharge fields
+    const [discountAmount, setDiscountAmount] = useState<number | ''>('');
+    const [discountType, setDiscountType] = useState<'perKg' | 'lumpsum'>('lumpsum');
+    const [discountCurrencyData, setDiscountCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
+    
+    const [surchargeAmount, setSurchargeAmount] = useState<number | ''>('');
+    const [surchargeType, setSurchargeType] = useState<'perKg' | 'lumpsum'>('lumpsum');
+    const [surchargeCurrencyData, setSurchargeCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
     
     const [containerNumber, setContainerNumber] = useState('');
     const [freightForwarderId, setFreightForwarderId] = useState('');
@@ -321,6 +362,12 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         setFreightCurrencyData({ currency: Currency.Dollar, conversionRate: 1 });
         setClearingCurrencyData({ currency: Currency.Dollar, conversionRate: 1 });
         setCommissionCurrencyData({ currency: Currency.Dollar, conversionRate: 1 });
+        setDiscountAmount('');
+        setDiscountType('lumpsum');
+        setDiscountCurrencyData({ currency: Currency.Dollar, conversionRate: 1 });
+        setSurchargeAmount('');
+        setSurchargeType('lumpsum');
+        setSurchargeCurrencyData({ currency: Currency.Dollar, conversionRate: 1 });
     };
 
      const isFormDirty = useMemo(() => {
@@ -461,6 +508,16 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             commissionCurrency: commissionCurrencyData.currency,
             commissionConversionRate: commissionCurrencyData.conversionRate,
             
+            discountAmount: Number(discountAmount) > 0 ? Number(discountAmount) : undefined,
+            discountType: Number(discountAmount) > 0 ? discountType : undefined,
+            discountCurrency: discountCurrencyData.currency,
+            discountConversionRate: discountCurrencyData.conversionRate,
+            
+            surchargeAmount: Number(surchargeAmount) > 0 ? Number(surchargeAmount) : undefined,
+            surchargeType: Number(surchargeAmount) > 0 ? surchargeType : undefined,
+            surchargeCurrency: surchargeCurrencyData.currency,
+            surchargeConversionRate: surchargeCurrencyData.conversionRate,
+            
             sourceOrderId: editingInvoice?.sourceOrderId,
         };
 
@@ -562,6 +619,14 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         setCommissionAgentId(invoice.commissionAgentId || '');
         setCommissionAmount(invoice.commissionAmount || '');
         setCommissionCurrencyData({ currency: invoice.commissionCurrency || Currency.Dollar, conversionRate: invoice.commissionConversionRate || 1 });
+        
+        setDiscountAmount(invoice.discountAmount || '');
+        setDiscountType(invoice.discountType || 'lumpsum');
+        setDiscountCurrencyData({ currency: invoice.discountCurrency || Currency.Dollar, conversionRate: invoice.discountConversionRate || 1 });
+        
+        setSurchargeAmount(invoice.surchargeAmount || '');
+        setSurchargeType(invoice.surchargeType || 'lumpsum');
+        setSurchargeCurrencyData({ currency: invoice.surchargeCurrency || Currency.Dollar, conversionRate: invoice.surchargeConversionRate || 1 });
 
         setCurrentInvoiceItems(invoice.items.map(i => ({
             ...i, 
@@ -872,7 +937,32 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
                                 <div><label className="block text-sm font-medium text-slate-700">Container #</label><input type="text" value={containerNumber} onChange={e => setContainerNumber(e.target.value)} className="mt-1 w-full p-2 rounded-md" /></div>
                                 <div><label className="block text-sm font-medium text-slate-700">Division</label><select value={divisionId} onChange={e => setDivisionId(e.target.value)} className="mt-1 w-full p-2 rounded-md"><option value="">Select Division</option>{state.divisions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></div>
                                 <div><label className="block text-sm font-medium text-slate-700">Sub Division</label><select value={subDivisionId} onChange={e => setSubDivisionId(e.target.value)} disabled={!divisionId || availableSubDivisions.length === 0} className="mt-1 w-full p-2 rounded-md"><option value="">Select Sub-Division</option>{availableSubDivisions.map(sd => <option key={sd.id} value={sd.id}>{sd.name}</option>)}</select></div>
-                                <div><label className="block text-sm font-medium text-slate-700">Discount(-) / Surcharge(+)</label><input type="number" value={discountSurcharge} onChange={e => setDiscountSurcharge(e.target.value === '' ? '' : Number(e.target.value))} className="mt-1 w-full p-2 rounded-md" placeholder="Amount in USD"/></div>
+                                
+                                {/* Discount Field */}
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">Discount (-)</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <select value={discountType} onChange={e => setDiscountType(e.target.value as 'perKg' | 'lumpsum')} className="p-2 rounded-md">
+                                            <option value="lumpsum">Lump Sum</option>
+                                            <option value="perKg">Per Kg</option>
+                                        </select>
+                                        <input type="number" step="any" value={discountAmount} onChange={e => setDiscountAmount(e.target.value === '' ? '' : Number(e.target.value))} className="p-2 rounded-md" placeholder={discountType === 'perKg' ? 'Rate per Kg' : 'Total amount'} />
+                                        <CurrencyInput value={discountCurrencyData} onChange={setDiscountCurrencyData} />
+                                    </div>
+                                </div>
+                                
+                                {/* Surcharge Field */}
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-slate-700 mb-2">Surcharge (+)</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <select value={surchargeType} onChange={e => setSurchargeType(e.target.value as 'perKg' | 'lumpsum')} className="p-2 rounded-md">
+                                            <option value="lumpsum">Lump Sum</option>
+                                            <option value="perKg">Per Kg</option>
+                                        </select>
+                                        <input type="number" step="any" value={surchargeAmount} onChange={e => setSurchargeAmount(e.target.value === '' ? '' : Number(e.target.value))} className="p-2 rounded-md" placeholder={surchargeType === 'perKg' ? 'Rate per Kg' : 'Total amount'} />
+                                        <CurrencyInput value={surchargeCurrencyData} onChange={setSurchargeCurrencyData} />
+                                    </div>
+                                </div>
                             </div>
                         </CollapsibleSection>
                         <CollapsibleSection title="Additional Costs">
