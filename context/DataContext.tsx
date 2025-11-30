@@ -556,6 +556,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                         }
                         // END: Data Cleanup Logic
 
+                        console.log('📥 RESTORE_STATE from Firestore', { 
+                            itemsCount: firestoreData.items?.length || 0,
+                            itemIds: firestoreData.items?.map((i: any) => i.id) || []
+                        });
                         dispatch({ type: 'RESTORE_STATE', payload: firestoreData });
                         setSaveStatus('synced');
                     } else {
@@ -644,6 +648,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                                     }
                                     // END: Data Cleanup Logic
 
+                                    console.log('📥 RESTORE_STATE from Firestore', { 
+                                        itemsCount: firestoreData.items?.length || 0,
+                                        itemIds: firestoreData.items?.map((i: any) => i.id) || []
+                                    });
                                     dispatch({ type: 'RESTORE_STATE', payload: firestoreData });
                                     setSaveStatus('synced');
                                 } else {
@@ -701,12 +709,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         // Debounce save by 500ms to batch rapid changes
         saveDebounceTimer.current = setTimeout(async () => {
             try {
-                console.log('💾 Saving to Firestore...', { itemsCount: state.items?.length || 0 });
+                console.log('💾 Saving to Firestore...', { itemsCount: state.items?.length || 0, items: state.items?.map(i => i.id) });
                 const sanitizedState = convertUndefinedToNull(state);
                 await db.doc(FIRESTORE_DOC_PATH).set(sanitizedState);
                 lastFirestoreSaveTime.current = Date.now();
                 setSaveStatus('synced');
-                console.log('✅ Firestore save complete', { timestamp: lastFirestoreSaveTime.current });
+                console.log('✅ Firestore save complete', { timestamp: lastFirestoreSaveTime.current, savedItemsCount: sanitizedState.items?.length });
                 
                 // Keep isLocalChange flag for 10 seconds after save completes
                 setTimeout(() => {
