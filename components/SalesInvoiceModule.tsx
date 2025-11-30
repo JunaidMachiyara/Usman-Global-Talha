@@ -245,10 +245,19 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
     
     const [lastInvoiceForCustomer, setLastInvoiceForCustomer] = useState<SalesInvoice | null>(null);
 
-    const [subModule, setSubModule] = useState<'new' | 'update'>('new');
+    const [subModule, setSubModule] = useState<'new' | 'update' | 'adjust'>('new');
     const [editingInvoice, setEditingInvoice] = useState<SalesInvoice | null>(null);
     const [viewingInvoice, setViewingInvoice] = useState<SalesInvoice | null>(null);
     const [updateFilters, setUpdateFilters] = useState({ startDate: '2024-01-01', endDate: new Date().toISOString().split('T')[0], customerId: '' });
+    
+    // Adjustment-specific state
+    const [adjustingInvoice, setAdjustingInvoice] = useState<SalesInvoice | null>(null);
+    const [adjustDiscountAmount, setAdjustDiscountAmount] = useState<number | ''>('');
+    const [adjustDiscountType, setAdjustDiscountType] = useState<'perKg' | 'lumpsum'>('lumpsum');
+    const [adjustDiscountCurrencyData, setAdjustDiscountCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
+    const [adjustSurchargeAmount, setAdjustSurchargeAmount] = useState<number | ''>('');
+    const [adjustSurchargeType, setAdjustSurchargeType] = useState<'perKg' | 'lumpsum'>('lumpsum');
+    const [adjustSurchargeCurrencyData, setAdjustSurchargeCurrencyData] = useState({ currency: Currency.Dollar, conversionRate: 1 });
 
     const [showResetConfirm, setShowResetConfirm] = useState(false);
     const resetConfirmTimeoutRef = useRef<number | null>(null);
@@ -876,7 +885,221 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
         </div>
     );
     
-    const getButtonClass = (module: 'new' | 'update') => `px-4 py-2 rounded-md transition-colors text-sm font-medium ${subModule === module ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`;
+    const renderAdjustInvoice = () => {
+        const handleSelectInvoiceForAdjustment = (invoiceId: string) => {
+            const invoice = state.salesInvoices.find(inv => inv.id === invoiceId);
+            if (invoice) {
+                setAdjustingInvoice(invoice);
+                setAdjustDiscountAmount(invoice.discountAmount || '');
+                setAdjustDiscountType(invoice.discountType || 'lumpsum');
+                setAdjustDiscountCurrencyData({ currency: invoice.discountCurrency || Currency.Dollar, conversionRate: invoice.discountConversionRate || 1 });
+                setAdjustSurchargeAmount(invoice.surchargeAmount || '');
+                setAdjustSurchargeType(invoice.surchargeType || 'lumpsum');
+                setAdjustSurchargeCurrencyData({ currency: invoice.surchargeCurrency || Currency.Dollar, conversionRate: invoice.surchargeConversionRate || 1 });
+            }
+        };
+        
+        const calculateDiscountSurcharge = (amount: number | undefined, type: 'perKg' | 'lumpsum' | undefined, conversionRate: number | undefined, totalKg: number) => {
+            if (!amount || amount <= 0) return 0;
+            const rate = conversionRate || 1;
+            return type === 'perKg' ? amount * totalKg * rate : amount * rate;
+        };
+        
+        const handleSaveAdjustment = () => {
+            if (!adjustingInvoice) return;
+            
+            const updatedInvoice: SalesInvoice = {
+                ...adjustingInvoice,
+                discountAmount: Number(adjustDiscountAmount) > 0 ? Number(adjustDiscountAmount) : undefined,
+                discountType: Number(adjustDiscountAmount) > 0 ? adjustDiscountType : undefined,
+                discountCurrency: adjustDiscountCurrencyData.currency,
+                discountConversionRate: adjustDiscountCurrencyData.conversionRate,
+                surchargeAmount: Number(adjustSurchargeAmount) > 0 ? Number(adjustSurchargeAmount) : undefined,
+                surchargeType: Number(adjustSurchargeAmount) > 0 ? adjustSurchargeType : undefined,
+                surchargeCurrency: adjustSurchargeCurrencyData.currency,
+                surchargeConversionRate: adjustSurchargeCurrencyData.conversionRate,
+            };
+            
+            // Create adjustment journal entries if invoice is posted
+            if (adjustingInvoice.status === InvoiceStatus.Posted) {
+                const customer = state.customers.find(c => c.id === adjustingInvoice.customerId);
+                const voucherId = `ADJ-${adjustingInvoice.id}`;
+                const adjustmentDate = new Date().toISOString().split('T')[0];
+                
+                // Calculate old discount/surcharge
+                const oldDiscountUSD = calculateDiscountSurcharge(
+                    adjustingInvoice.discountAmount, 
+                    adjustingInvoice.discountType, 
+                    adjustingInvoice.discountConversionRate, 
+                    adjustingInvoice.totalKg
+                );
+                const oldSurchargeUSD = calculateDiscountSurcharge(
+                    adjustingInvoice.surchargeAmount, 
+                    adjustingInvoice.surchargeType, 
+                    adjustingInvoice.surchargeConversionRate, 
+                    adjustingInvoice.totalKg
+                );
+                
+                // Calculate new discount/surcharge
+                const newDiscountUSD = calculateDiscountSurcharge(
+                    Number(adjustDiscountAmount) || 0, 
+                    adjustDiscountType, 
+                    adjustDiscountCurrencyData.conversionRate, 
+                    adjustingInvoice.totalKg
+                );
+                const newSurchargeUSD = calculateDiscountSurcharge(
+                    Number(adjustSurchargeAmount) || 0, 
+                    adjustSurchargeType, 
+                    adjustSurchargeCurrencyData.conversionRate, 
+                    adjustingInvoice.totalKg
+                );
+                
+                const discountDifference = newDiscountUSD - oldDiscountUSD;
+                const surchargeDifference = newSurchargeUSD - oldSurchargeUSD;
+                const netAdjustment = -discountDifference + surchargeDifference; // Net effect on AR
+                
+                if (Math.abs(netAdjustment) > 0.01) {
+                    const description = `Discount/Surcharge adjustment for INV ${adjustingInvoice.id} (${customer?.name || 'N/A'})`;
+                    
+                    if (netAdjustment > 0) {
+                        // Increase AR (debit customer more)
+                        const debitAR: JournalEntry = {
+                            id: `je-adj-d-${Date.now()}`, voucherId, date: adjustmentDate, entryType: JournalEntryType.Journal,
+                            account: 'AR-001', debit: netAdjustment, credit: 0, description,
+                            entityId: adjustingInvoice.customerId, entityType: 'customer', createdBy: userProfile?.uid,
+                        };
+                        const creditRevenue: JournalEntry = {
+                            id: `je-adj-c-${Date.now()}`, voucherId, date: adjustmentDate, entryType: JournalEntryType.Journal,
+                            account: 'REV-002', debit: 0, credit: netAdjustment, description, createdBy: userProfile?.uid,
+                        };
+                        dispatch({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: debitAR } });
+                        dispatch({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: creditRevenue } });
+                    } else {
+                        // Decrease AR (credit customer, reduce receivable)
+                        const creditAR: JournalEntry = {
+                            id: `je-adj-c-${Date.now()}`, voucherId, date: adjustmentDate, entryType: JournalEntryType.Journal,
+                            account: 'AR-001', debit: 0, credit: Math.abs(netAdjustment), description,
+                            entityId: adjustingInvoice.customerId, entityType: 'customer', createdBy: userProfile?.uid,
+                        };
+                        const debitExpense: JournalEntry = {
+                            id: `je-adj-d-${Date.now()}`, voucherId, date: adjustmentDate, entryType: JournalEntryType.Journal,
+                            account: 'EXP-009', debit: Math.abs(netAdjustment), credit: 0, description, createdBy: userProfile?.uid,
+                        };
+                        dispatch({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: creditAR } });
+                        dispatch({ type: 'ADD_ENTITY', payload: { entity: 'journalEntries', data: debitExpense } });
+                    }
+                }
+            }
+            
+            dispatch({ type: 'UPDATE_ENTITY', payload: { entity: 'salesInvoices', data: updatedInvoice } });
+            setNotification('Invoice adjustment saved successfully!');
+            setAdjustingInvoice(null);
+        };
+        
+        const sortedInvoices = [...state.salesInvoices].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        
+        return (
+            <div className="bg-white p-6 rounded-lg shadow-md">
+                <h2 className="text-2xl font-bold text-slate-800 mb-6">Adjust Discount / Surcharge</h2>
+                
+                {!adjustingInvoice ? (
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">Select Invoice to Adjust</label>
+                        <select 
+                            onChange={(e) => handleSelectInvoiceForAdjustment(e.target.value)} 
+                            className="w-full p-3 rounded-md border border-slate-300"
+                        >
+                            <option value="">-- Select an Invoice --</option>
+                            {sortedInvoices.map(inv => {
+                                const customer = state.customers.find(c => c.id === inv.customerId);
+                                return (
+                                    <option key={inv.id} value={inv.id}>
+                                        {inv.id} - {customer?.name} - {inv.date} ({inv.status})
+                                    </option>
+                                );
+                            })}
+                        </select>
+                    </div>
+                ) : (
+                    <div className="space-y-6">
+                        <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                            <h3 className="font-semibold text-slate-800 mb-2">Invoice Details</h3>
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                                <p><strong>Invoice ID:</strong> {adjustingInvoice.id}</p>
+                                <p><strong>Date:</strong> {adjustingInvoice.date}</p>
+                                <p><strong>Customer:</strong> {state.customers.find(c => c.id === adjustingInvoice.customerId)?.name}</p>
+                                <p><strong>Status:</strong> <span className={adjustingInvoice.status === InvoiceStatus.Posted ? 'text-green-600 font-semibold' : 'text-orange-600'}>{adjustingInvoice.status}</span></p>
+                                <p><strong>Total Kg:</strong> {adjustingInvoice.totalKg.toFixed(2)}</p>
+                            </div>
+                        </div>
+                        
+                        <div className="border rounded-lg p-4">
+                            <h4 className="font-semibold text-slate-800 mb-4">Current Values</h4>
+                            <div className="grid grid-cols-2 gap-4 text-sm mb-4 bg-slate-50 p-3 rounded">
+                                <div>
+                                    <p className="text-slate-600">Discount:</p>
+                                    <p className="font-semibold">
+                                        {adjustingInvoice.discountAmount ? 
+                                            `${adjustingInvoice.discountAmount} ${adjustingInvoice.discountCurrency || 'USD'} (${adjustingInvoice.discountType === 'perKg' ? 'Per Kg' : 'Lump Sum'})` 
+                                            : 'None'}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p className="text-slate-600">Surcharge:</p>
+                                    <p className="font-semibold">
+                                        {adjustingInvoice.surchargeAmount ? 
+                                            `${adjustingInvoice.surchargeAmount} ${adjustingInvoice.surchargeCurrency || 'USD'} (${adjustingInvoice.surchargeType === 'perKg' ? 'Per Kg' : 'Lump Sum'})` 
+                                            : 'None'}
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <h4 className="font-semibold text-slate-800 mb-4 mt-6">New Values</h4>
+                            
+                            {/* Discount Adjustment */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-slate-700 mb-2">Discount (-)</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    <select value={adjustDiscountType} onChange={e => setAdjustDiscountType(e.target.value as 'perKg' | 'lumpsum')} className="p-2 rounded-md">
+                                        <option value="lumpsum">Lump Sum</option>
+                                        <option value="perKg">Per Kg</option>
+                                    </select>
+                                    <input type="number" step="any" value={adjustDiscountAmount} onChange={e => setAdjustDiscountAmount(e.target.value === '' ? '' : Number(e.target.value))} className="p-2 rounded-md" placeholder={adjustDiscountType === 'perKg' ? 'Rate per Kg' : 'Total amount'} />
+                                    <CurrencyInput value={adjustDiscountCurrencyData} onChange={setAdjustDiscountCurrencyData} />
+                                </div>
+                            </div>
+                            
+                            {/* Surcharge Adjustment */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-slate-700 mb-2">Surcharge (+)</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    <select value={adjustSurchargeType} onChange={e => setAdjustSurchargeType(e.target.value as 'perKg' | 'lumpsum')} className="p-2 rounded-md">
+                                        <option value="lumpsum">Lump Sum</option>
+                                        <option value="perKg">Per Kg</option>
+                                    </select>
+                                    <input type="number" step="any" value={adjustSurchargeAmount} onChange={e => setAdjustSurchargeAmount(e.target.value === '' ? '' : Number(e.target.value))} className="p-2 rounded-md" placeholder={adjustSurchargeType === 'perKg' ? 'Rate per Kg' : 'Total amount'} />
+                                    <CurrencyInput value={adjustSurchargeCurrencyData} onChange={setAdjustSurchargeCurrencyData} />
+                                </div>
+                            </div>
+                            
+                            {adjustingInvoice.status === InvoiceStatus.Posted && (
+                                <div className="bg-yellow-50 border border-yellow-300 p-3 rounded-md text-sm text-yellow-800 mb-4">
+                                    <strong>⚠️ Note:</strong> This invoice is posted. Adjustment journal entries will be created automatically to reflect the change in customer's account.
+                                </div>
+                            )}
+                            
+                            <div className="flex justify-end space-x-2 mt-6">
+                                <button onClick={() => setAdjustingInvoice(null)} className="px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300">Cancel</button>
+                                <button onClick={handleSaveAdjustment} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">Save Adjustment</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
+    
+    const getButtonClass = (module: 'new' | 'update' | 'adjust') => `px-4 py-2 rounded-md transition-colors text-sm font-medium ${subModule === module ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`;
 
     return (
         <div className="space-y-6">
@@ -889,8 +1112,9 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             )}
             
             <div className="flex items-center space-x-2">
-                <button onClick={() => { setSubModule('new'); resetInvoice(); }} className={getButtonClass('new')}>New Invoice</button>
-                <button onClick={() => { setSubModule('update'); resetInvoice(); }} className={getButtonClass('update')}>Update / View Invoices</button>
+                <button onClick={() => { setSubModule('new'); resetInvoice(); setAdjustingInvoice(null); }} className={getButtonClass('new')}>New Invoice</button>
+                <button onClick={() => { setSubModule('update'); resetInvoice(); setAdjustingInvoice(null); }} className={getButtonClass('update')}>Update / View Invoices</button>
+                <button onClick={() => { setSubModule('adjust'); resetInvoice(); setAdjustingInvoice(null); }} className={getButtonClass('adjust')}>Adjust Discount/Surcharge</button>
             </div>
 
             {subModule === 'new' && (
@@ -993,6 +1217,7 @@ const SalesInvoiceModule: React.FC<SalesInvoiceProps> = ({ setModule, userProfil
             )}
             
             {subModule === 'update' && renderUpdateList()}
+            {subModule === 'adjust' && renderAdjustInvoice()}
 
             {completedInvoice && (
                 <Modal isOpen={isSummaryModalOpen} onClose={handleCloseSummaryModal} title="Invoice Summary & Confirmation" size="5xl">
