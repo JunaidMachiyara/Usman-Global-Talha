@@ -493,7 +493,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const isUpdatingFromFirestore = useRef(false);
     const firestoreUnsubscribe = useRef<(() => void) | null>(null);
     const isLocalChange = useRef(false);
-    const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+    const wrappedDispatch: React.Dispatch<Action> = (action) => {
+        isLocalChange.current = true;
+        dispatch(action);
+    };
     
     // Effect for Auth and reading from Firestore
     useEffect(() => {
@@ -508,13 +512,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             firestoreUnsubscribe.current = db.doc(FIRESTORE_DOC_PATH).onSnapshot(
                 (doc: any) => {
-                    console.log('📡 Firestore onSnapshot triggered', { isLocalChange: isLocalChange.current });
                     if (isLocalChange.current) {
-                        console.log('⏭️  Skipping onSnapshot - local change in progress');
+                        isLocalChange.current = false;
                         return;
                     }
                     if (doc.exists) {
-                        console.log('📥 Restoring state from Firestore');
                         isUpdatingFromFirestore.current = true;
                         
                         // START: Data Cleanup Logic
@@ -587,13 +589,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
                         firestoreUnsubscribe.current = db.doc(FIRESTORE_DOC_PATH).onSnapshot(
                             (doc: any) => {
-                                console.log('📡 Firestore onSnapshot triggered (Auth mode)', { isLocalChange: isLocalChange.current });
-                                if (isLocalChange.current) {
-                                    console.log('⏭️ Skipping onSnapshot - local change in progress');
+                                 if (isLocalChange.current) {
+                                    isLocalChange.current = false;
                                     return;
                                 }
                                 if (doc.exists) {
-                                    console.log('📥 Restoring state from Firestore');
                                     isUpdatingFromFirestore.current = true;
 
                                     // START: Data Cleanup Logic
@@ -665,27 +665,14 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         
         const saveData = async () => {
-            // Set flag BEFORE saving to prevent onSnapshot from overwriting
-            isLocalChange.current = true;
             setSaveStatus('saving');
-            console.log('💾 Saving to Firestore...', { itemsCount: state.items.length });
-            
             try {
                 const sanitizedState = convertUndefinedToNull(state);
                 await db.doc(FIRESTORE_DOC_PATH).set(sanitizedState);
                 setSaveStatus('synced');
-                console.log('✅ Firestore save complete');
-                
-                // Clear the flag after a delay to allow onSnapshot to process
-                if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-                saveTimeoutRef.current = setTimeout(() => {
-                    isLocalChange.current = false;
-                    console.log('🔓 isLocalChange cleared');
-                }, 2000);
             } catch (error) {
                 console.error("Error writing to Firestore:", error);
                 setSaveStatus('error');
-                isLocalChange.current = false;
             }
         };
 
