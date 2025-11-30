@@ -683,11 +683,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 setSaveStatus('synced');
                 console.log('✅ Firestore save complete');
                 
-                // Keep isLocalChange flag for 3 seconds after save completes
+                // Keep isLocalChange flag for 5 seconds after save completes
+                // This prevents onSnapshot from overwriting the newly saved data
                 setTimeout(() => {
                     isLocalChange.current = false;
                     console.log('🔓 isLocalChange cleared after successful save');
-                }, 3000);
+                }, 5000);
             } catch (error) {
                 console.error("Error writing to Firestore:", error);
                 setSaveStatus('error');
