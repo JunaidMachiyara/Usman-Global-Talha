@@ -494,9 +494,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const firestoreUnsubscribe = useRef<(() => void) | null>(null);
     const isLocalChange = useRef(false);
     const saveDebounceTimer = useRef<NodeJS.Timeout | null>(null);
+    const lastLocalChangeTime = useRef<number>(0);
+    const lastFirestoreSaveTime = useRef<number>(0);
 
     const wrappedDispatch: React.Dispatch<Action> = (action) => {
         isLocalChange.current = true;
+        lastLocalChangeTime.current = Date.now();
+        console.log('📝 Local change detected', { action: action.type, timestamp: lastLocalChangeTime.current });
         dispatch(action);
     };
     
@@ -513,9 +517,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             firestoreUnsubscribe.current = db.doc(FIRESTORE_DOC_PATH).onSnapshot(
                 (doc: any) => {
-                    console.log('📡 onSnapshot fired (dev mode)', { isLocalChange: isLocalChange.current });
-                    if (isLocalChange.current) {
-                        console.log('⏭️ Skipped - local change in progress');
+                    const now = Date.now();
+                    const timeSinceLocalChange = now - lastLocalChangeTime.current;
+                    const timeSinceLastSave = now - lastFirestoreSaveTime.current;
+                    
+                    console.log('📡 onSnapshot fired (dev mode)', { 
+                        isLocalChange: isLocalChange.current,
+                        timeSinceLocalChange,
+                        timeSinceLastSave
+                    });
+                    
+                    // Skip if local change happened in last 15 seconds
+                    if (isLocalChange.current || timeSinceLocalChange < 15000) {
+                        console.log('⏭️ Skipped - recent local change');
                         return;
                     }
                     if (doc.exists) {
@@ -591,9 +605,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
                         firestoreUnsubscribe.current = db.doc(FIRESTORE_DOC_PATH).onSnapshot(
                             (doc: any) => {
-                                console.log('📡 onSnapshot fired (auth mode)', { isLocalChange: isLocalChange.current });
-                                if (isLocalChange.current) {
-                                    console.log('⏭️ Skipped - local change in progress');
+                                const now = Date.now();
+                                const timeSinceLocalChange = now - lastLocalChangeTime.current;
+                                const timeSinceLastSave = now - lastFirestoreSaveTime.current;
+                                
+                                console.log('📡 onSnapshot fired (auth mode)', { 
+                                    isLocalChange: isLocalChange.current,
+                                    timeSinceLocalChange,
+                                    timeSinceLastSave
+                                });
+                                
+                                // Skip if local change happened in last 15 seconds
+                                if (isLocalChange.current || timeSinceLocalChange < 15000) {
+                                    console.log('⏭️ Skipped - recent local change');
                                     return;
                                 }
                                 if (doc.exists) {
@@ -680,15 +704,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 console.log('💾 Saving to Firestore...', { itemsCount: state.items?.length || 0 });
                 const sanitizedState = convertUndefinedToNull(state);
                 await db.doc(FIRESTORE_DOC_PATH).set(sanitizedState);
+                lastFirestoreSaveTime.current = Date.now();
                 setSaveStatus('synced');
-                console.log('✅ Firestore save complete');
+                console.log('✅ Firestore save complete', { timestamp: lastFirestoreSaveTime.current });
                 
-                // Keep isLocalChange flag for 5 seconds after save completes
-                // This prevents onSnapshot from overwriting the newly saved data
+                // Keep isLocalChange flag for 10 seconds after save completes
                 setTimeout(() => {
                     isLocalChange.current = false;
-                    console.log('🔓 isLocalChange cleared after successful save');
-                }, 5000);
+                    console.log('🔓 isLocalChange cleared');
+                }, 10000);
             } catch (error) {
                 console.error("Error writing to Firestore:", error);
                 setSaveStatus('error');
