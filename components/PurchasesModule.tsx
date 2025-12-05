@@ -909,8 +909,8 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
                     quantityPurchased: '',
                     rate: '',
                     amount: '',
-                    currency: Currency.Dollar,
-                    conversionRate: '1',
+                    currency: Currency.AED, // Default to AED
+                    conversionRate: defaultConversionRates[Currency.AED].toString(), // Default AED rate
                 };
             });
             return updated;
@@ -996,24 +996,7 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
                             <div key={id} className="border rounded p-4 bg-white">
                                 <div className="font-semibold mb-2">{ss?.name || id}</div>
                                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                    <div>
-                                        <label className="block text-sm font-medium mb-1">Invoice Number</label>
-                                        <input
-                                            type="text"
-                                            className="w-full border rounded p-2"
-                                            value={invoice.invoiceNumber}
-                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, invoiceNumber: e.target.value } }))}
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium mb-1">Date</label>
-                                        <input
-                                            type="date"
-                                            className="w-full border rounded p-2"
-                                            value={invoice.date}
-                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, date: e.target.value } }))}
-                                        />
-                                    </div>
+                                    {/* Removed Invoice Number and Date fields as requested */}
                                     <div>
                                         <label className="block text-sm font-medium mb-1">Original Type</label>
                                         <select
@@ -1051,7 +1034,7 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium mb-1">Rate</label>
+                                        <label className="block text-sm font-medium mb-1">Rate (AED)</label>
                                         <input
                                             type="number"
                                             className="w-full border rounded p-2"
