@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useData } from '../context/DataContext.tsx';
 import { 
@@ -42,7 +41,7 @@ const CollapsibleSection: React.FC<{ title: string; children: React.ReactNode; d
 };
 
 // --- Main Purchases Module ---
-type PurchaseView = 'original' | 'finishedGoods';
+type PurchaseView = 'original' | 'composite' | 'finishedGoods';
 
 interface PurchasesModuleProps {
     showNotification: (msg: string) => void;
@@ -60,16 +59,19 @@ const PurchasesModule: React.FC<PurchasesModuleProps> = ({ showNotification, use
             <div className="flex items-center space-x-2">
                 <h2 className="text-xl font-bold text-slate-700 mr-4">New Purchase</h2>
                 <button onClick={() => setView('original')} className={getButtonClass('original')}>Original Purchase</button>
+                <button onClick={() => setView('composite')} className={getButtonClass('composite')}>Composite Purchase</button>
                 <button onClick={() => setView('finishedGoods')} className={getButtonClass('finishedGoods')} disabled>Finished Goods</button>
             </div>
 
             <div>
                 {view === 'original' && <OriginalPurchaseFormInternal showNotification={showNotification} userProfile={userProfile} />}
+                {view === 'composite' && <CompositePurchaseForm showNotification={showNotification} userProfile={userProfile} />}
                 {view === 'finishedGoods' && <FinishedGoodsPurchaseFormInternal showNotification={showNotification} userProfile={userProfile} />}
             </div>
         </div>
     );
-};
+}
+
 
 const OriginalPurchaseFormInternal: React.FC<Omit<PurchasesModuleProps, 'selectedSupplierId'>> = ({ showNotification, userProfile }) => {
     const { state, dispatch } = useData();
@@ -782,6 +784,674 @@ const PrintablePurchaseVoucher: React.FC<{ purchase: OriginalPurchased, state: A
                 Grand Total (USD): ${totalValueUSD.toFixed(2)}
             </div>
         </div>
+    );
+};
+
+
+// Step 2: Composite Purchase Form (Main supplier + multi sub-suppliers)
+interface CompositePurchaseFormProps {
+    showNotification: (msg: string) => void;
+    userProfile: UserProfile | null;
+}
+
+const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotification, userProfile }) => {
+    const { state, dispatch } = useData();
+
+
+    const [mainSupplierId, setMainSupplierId] = useState('');
+    const [selectedSubSupplierIds, setSelectedSubSupplierIds] = useState<string[]>([]);
+    // Only show suppliers who have at least one sub-supplier
+    const supplierOptions = state.suppliers
+        .filter(s => state.subSuppliers.some(ss => ss.supplierId === s.id))
+        .map(s => ({ value: s.id, label: s.name }));
+    // Sub-supplier options filtered by main supplier
+    const subSupplierOptions = state.subSuppliers
+        .filter(ss => !mainSupplierId || ss.supplierId === mainSupplierId)
+        .map(ss => ({ value: ss.id, label: ss.name }));
+    // Auto-populate main invoice number and date as in original purchase form
+    const allBatchNumbers = [
+        ...state.originalPurchases.map(p => p.batchNumber),
+        ...state.finishedGoodsPurchases.map(p => p.batchNumber)
+    ];
+    const lastNumericBatch = allBatchNumbers
+        .filter(bn => bn && /^\d+$/.test(bn))
+        .map(bn => parseInt(bn, 10))
+        .sort((a, b) => b - a)[0];
+    const nextBatchNumber = lastNumericBatch ? String(lastNumericBatch + 1) : '101';
+    const [mainInvoiceNumber, setMainInvoiceNumber] = useState(nextBatchNumber);
+    const [mainInvoiceDate, setMainInvoiceDate] = useState(() => new Date().toISOString().split('T')[0]);
+    const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+    // Track invoice details for each sub-supplier (mirroring original purchase fields)
+    const todayStr = new Date().toISOString().split('T')[0];
+    const [subSupplierInvoices, setSubSupplierInvoices] = useState<Record<string, {
+        invoiceNumber: string;
+        date: string;
+        originalTypeId: string;
+        originalProductId: string;
+        quantityPurchased: string;
+        rate: string;
+        amount: string;
+        currency: Currency;
+        conversionRate: string;
+    }>>({});
+
+
+
+    // Helper for sub-supplier invoice field change with auto-calc
+    const handleSubSupplierInvoiceChange = (id: string, field: string, value: string) => {
+        setSubSupplierInvoices(prev => {
+            const invoice = prev[id] || {};
+            let { quantityPurchased = '', rate = '', amount = '' } = invoice;
+            if (field === 'quantityPurchased') quantityPurchased = value;
+            if (field === 'rate') rate = value;
+            if (field === 'amount') amount = value;
+            // Auto-calc logic
+            if (field === 'rate' || field === 'quantityPurchased') {
+                const q = parseFloat(quantityPurchased || '0');
+                const r = parseFloat(rate || '0');
+                if (q > 0 && r > 0) {
+                    amount = (q * r).toFixed(2);
+                }
+            }
+            if (field === 'amount' || field === 'quantityPurchased') {
+                const q = parseFloat(quantityPurchased || '0');
+                const a = parseFloat(amount || '0');
+                if (q > 0 && a > 0 && (field === 'amount' || field === 'quantityPurchased')) {
+                    rate = (a / q).toFixed(6);
+                }
+            }
+            return {
+                ...prev,
+                [id]: {
+                    ...invoice,
+                    [field]: value,
+                    quantityPurchased,
+                    rate,
+                    amount,
+                },
+            };
+        });
+    };
+
+    // Additional cost section state
+    // Expanded Additional Cost section state
+    const [additionalCosts, setAdditionalCosts] = useState({
+        freight: { agentId: '', amount: '', currency: Currency.Dollar, conversionRate: '1' },
+        clearing: { agentId: '', amount: '', currency: Currency.Dollar, conversionRate: '1' },
+        commission: { agentId: '', amount: '', currency: Currency.Dollar, conversionRate: '1' },
+    });
+
+
+
+    if (supplierOptions.length === 0) {
+        return (
+            <div className="p-6 border rounded bg-yellow-50 text-yellow-900 mt-8">
+                <h3 className="text-lg font-bold mb-2">No suppliers with sub-suppliers found</h3>
+                <p>Please add suppliers and sub-suppliers in the Setup module before using Composite Purchase.</p>
+            </div>
+        );
+    }
+
+    // Handle sub-supplier selection (multi-select)
+    const handleSubSupplierChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const options = Array.from(e.target.selectedOptions) as HTMLOptionElement[];
+        const ids = options.map(opt => opt.value);
+        setSelectedSubSupplierIds(ids);
+        // Remove invoice data for unselected sub-suppliers
+        setSubSupplierInvoices(prev => {
+            const updated: typeof prev = {};
+            ids.forEach(id => {
+                updated[id] = prev[id] || {
+                    invoiceNumber: '',
+                    date: todayStr,
+                    originalTypeId: '',
+                    originalProductId: '',
+                    quantityPurchased: '',
+                    rate: '',
+                    amount: '',
+                    currency: Currency.Dollar,
+                    conversionRate: '1',
+                };
+            });
+            return updated;
+        });
+    };
+
+    return (
+        <>
+            <div className="mt-6 max-w-xl grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label className="block text-sm font-medium mb-1">Main Invoice Number</label>
+                    <input
+                        type="text"
+                        className="w-full border rounded p-2 mb-2"
+                        value={mainInvoiceNumber}
+                        onChange={e => setMainInvoiceNumber(e.target.value)}
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium mb-1">Main Invoice Date</label>
+                    <input
+                        type="date"
+                        className="w-full border rounded p-2 mb-2"
+                        value={mainInvoiceDate}
+                        onChange={e => setMainInvoiceDate(e.target.value)}
+                    />
+                </div>
+            </div>
+            <div className="mt-6 max-w-xl">
+                <label className="block text-sm font-medium mb-1">Main Supplier</label>
+                <select
+                    className="w-full border rounded p-2 mb-4"
+                    value={mainSupplierId}
+                    onChange={e => {
+                        setMainSupplierId(e.target.value);
+                        setSelectedSubSupplierIds([]);
+                    }}
+                >
+                    <option value="">Select main supplier...</option>
+                    {supplierOptions.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                </select>
+            </div>
+            {mainSupplierId && (
+                <div className="mt-4 max-w-xl">
+                    <label className="block text-sm font-medium mb-1">Sub-Suppliers</label>
+                    <select
+                        className="w-full border rounded p-2 mb-4"
+                        multiple
+                        value={selectedSubSupplierIds}
+                        onChange={handleSubSupplierChange}
+                        size={Math.max(2, subSupplierOptions.length)}
+                    >
+                        {subSupplierOptions.map(opt => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                    </select>
+                </div>
+            )}
+            {selectedSubSupplierIds.length > 0 && (
+                <div className="mt-6 space-y-6">
+                    <h4 className="font-semibold mb-2">Sub-Supplier Invoices</h4>
+                    {selectedSubSupplierIds.map(id => {
+                        const ss = state.subSuppliers.find(s => s.id === id);
+                        const invoice = subSupplierInvoices[id] || {
+                            invoiceNumber: '',
+                            date: todayStr,
+                            originalTypeId: '',
+                            originalProductId: '',
+                            quantityPurchased: '',
+                            rate: '',
+                            amount: '',
+                            currency: Currency.Dollar,
+                            conversionRate: '1',
+                        };
+                        // Get product options for this sub-supplier
+                        const originalTypeOptions = state.originalTypes.map(ot => ({ value: ot.id, label: ot.name }));
+                        const productOptions = invoice.originalTypeId
+                            ? state.originalProducts.filter(op => op.originalTypeId === invoice.originalTypeId).map(op => ({ value: op.id, label: op.name }))
+                            : [];
+                        return (
+                            <div key={id} className="border rounded p-4 bg-white">
+                                <div className="font-semibold mb-2">{ss?.name || id}</div>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Invoice Number</label>
+                                        <input
+                                            type="text"
+                                            className="w-full border rounded p-2"
+                                            value={invoice.invoiceNumber}
+                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, invoiceNumber: e.target.value } }))}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Date</label>
+                                        <input
+                                            type="date"
+                                            className="w-full border rounded p-2"
+                                            value={invoice.date}
+                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, date: e.target.value } }))}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Original Type</label>
+                                        <select
+                                            className="w-full border rounded p-2"
+                                            value={invoice.originalTypeId}
+                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, originalTypeId: e.target.value, originalProductId: '' } }))}
+                                        >
+                                            <option value="">Select type...</option>
+                                            {originalTypeOptions.map(opt => (
+                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Product</label>
+                                        <select
+                                            className="w-full border rounded p-2"
+                                            value={invoice.originalProductId}
+                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, originalProductId: e.target.value } }))}
+                                            disabled={!invoice.originalTypeId}
+                                        >
+                                            <option value="">Select product...</option>
+                                            {productOptions.map(opt => (
+                                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Quantity</label>
+                                        <input
+                                            type="number"
+                                            className="w-full border rounded p-2"
+                                            value={invoice.quantityPurchased}
+                                            onChange={e => handleSubSupplierInvoiceChange(id, 'quantityPurchased', e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Rate</label>
+                                        <input
+                                            type="number"
+                                            className="w-full border rounded p-2"
+                                            value={invoice.rate}
+                                            onChange={e => handleSubSupplierInvoiceChange(id, 'rate', e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Amount</label>
+                                        <input
+                                            type="number"
+                                            className="w-full border rounded p-2"
+                                            value={invoice.amount}
+                                            onChange={e => handleSubSupplierInvoiceChange(id, 'amount', e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Currency</label>
+                                        <select
+                                            className="w-full border rounded p-2"
+                                            value={invoice.currency}
+                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, currency: e.target.value as Currency } }))}
+                                        >
+                                            {Object.values(Currency).map(cur => (
+                                                <option key={cur} value={cur}>{cur}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Conversion Rate</label>
+                                        <input
+                                            type="number"
+                                            className="w-full border rounded p-2"
+                                            value={invoice.conversionRate}
+                                            onChange={e => setSubSupplierInvoices(prev => ({ ...prev, [id]: { ...invoice, conversionRate: e.target.value } }))}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        );
+				})}
+			</div>
+            )}
+
+
+            {/* Additional Cost Section */}
+            {selectedSubSupplierIds.length > 0 && (
+                <>
+                <div className="mt-8 border-t pt-6">
+                    <h4 className="font-semibold mb-2">Additional Costs</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* Freight */}
+                        <div className="border rounded p-3 bg-slate-50">
+                            <label className="block text-sm font-medium mb-1">Freight Forwarder</label>
+                            <select
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.freight.agentId}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, freight: { ...c.freight, agentId: e.target.value } }))}
+                            >
+                                <option value="">Select Forwarder...</option>
+                                {state.freightForwarders.map(f => (
+                                    <option key={f.id} value={f.id}>{f.name}</option>
+                                ))}
+                            </select>
+                            <label className="block text-xs mb-1">Amount</label>
+                            <input
+                                type="number"
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.freight.amount}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, freight: { ...c.freight, amount: e.target.value } }))}
+                            />
+                            <label className="block text-xs mb-1">Currency</label>
+                            <select
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.freight.currency}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, freight: { ...c.freight, currency: e.target.value as Currency } }))}
+                            >
+                                {Object.values(Currency).map(cur => (
+                                    <option key={cur} value={cur}>{cur}</option>
+                                ))}
+                            </select>
+                            <label className="block text-xs mb-1">Conversion Rate</label>
+                            <input
+                                type="number"
+                                className="w-full border rounded p-2"
+                                value={additionalCosts.freight.conversionRate}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, freight: { ...c.freight, conversionRate: e.target.value } }))}
+                            />
+                        </div>
+                        {/* Clearing */}
+                        <div className="border rounded p-3 bg-slate-50">
+                            <label className="block text-sm font-medium mb-1">Clearing Agent</label>
+                            <select
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.clearing.agentId}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, clearing: { ...c.clearing, agentId: e.target.value } }))}
+                            >
+                                <option value="">Select Agent...</option>
+                                {state.clearingAgents.map(f => (
+                                    <option key={f.id} value={f.id}>{f.name}</option>
+                                ))}
+                            </select>
+                            <label className="block text-xs mb-1">Amount</label>
+                            <input
+                                type="number"
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.clearing.amount}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, clearing: { ...c.clearing, amount: e.target.value } }))}
+                            />
+                            <label className="block text-xs mb-1">Currency</label>
+                            <select
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.clearing.currency}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, clearing: { ...c.clearing, currency: e.target.value as Currency } }))}
+                            >
+                                {Object.values(Currency).map(cur => (
+                                    <option key={cur} value={cur}>{cur}</option>
+                                ))}
+                            </select>
+                            <label className="block text-xs mb-1">Conversion Rate</label>
+                            <input
+                                type="number"
+                                className="w-full border rounded p-2"
+                                value={additionalCosts.clearing.conversionRate}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, clearing: { ...c.clearing, conversionRate: e.target.value } }))}
+                            />
+                        </div>
+                        {/* Commission */}
+                        <div className="border rounded p-3 bg-slate-50">
+                            <label className="block text-sm font-medium mb-1">Commission Agent</label>
+                            <select
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.commission.agentId}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, commission: { ...c.commission, agentId: e.target.value } }))}
+                            >
+                                <option value="">Select Agent...</option>
+                                {state.commissionAgents.map(f => (
+                                    <option key={f.id} value={f.id}>{f.name}</option>
+                                ))}
+                            </select>
+                            <label className="block text-xs mb-1">Amount</label>
+                            <input
+                                type="number"
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.commission.amount}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, commission: { ...c.commission, amount: e.target.value } }))}
+                            />
+                            <label className="block text-xs mb-1">Currency</label>
+                            <select
+                                className="w-full border rounded p-2 mb-2"
+                                value={additionalCosts.commission.currency}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, commission: { ...c.commission, currency: e.target.value as Currency } }))}
+                            >
+                                {Object.values(Currency).map(cur => (
+                                    <option key={cur} value={cur}>{cur}</option>
+                                ))}
+                            </select>
+                            <label className="block text-xs mb-1">Conversion Rate</label>
+                            <input
+                                type="number"
+                                className="w-full border rounded p-2"
+                                value={additionalCosts.commission.conversionRate}
+                                onChange={e => setAdditionalCosts(c => ({ ...c, commission: { ...c.commission, conversionRate: e.target.value } }))}
+                            />
+                        </div>
+                    </div>
+                </div>
+                {/* Save & Preview Button */}
+                <div className="mt-8 flex justify-end">
+                    <button
+                        className="px-6 py-2 bg-blue-600 text-white rounded font-semibold hover:bg-blue-700"
+                        onClick={() => setIsPreviewOpen(true)}
+                    >
+                        Save & Preview
+                    </button>
+                </div>
+                </>
+            )}
+
+            {/* Preview Modal */}
+            {isPreviewOpen && (
+                <Modal isOpen={isPreviewOpen} onClose={() => setIsPreviewOpen(false)} title="Composite Purchase Preview" size="xl">
+                    <div className="p-4 print:bg-white">
+                        <h2 className="text-xl font-bold mb-2">Composite Purchase Voucher</h2>
+                        <div className="mb-2 flex flex-wrap gap-8">
+                            <div><strong>Main Invoice #:</strong> {mainInvoiceNumber}</div>
+                            <div><strong>Date:</strong> {mainInvoiceDate}</div>
+                            <div><strong>Main Supplier:</strong> {supplierOptions.find(s => s.value === mainSupplierId)?.label || ''}</div>
+                        </div>
+                        <hr className="my-2" />
+                        <h3 className="font-semibold mb-2">Sub-Supplier Invoices</h3>
+                        {selectedSubSupplierIds.map(id => {
+                            const ss = state.subSuppliers.find(s => s.id === id);
+                            const invoice = subSupplierInvoices[id];
+                            const originalType = state.originalTypes.find(ot => ot.id === invoice.originalTypeId)?.name || '';
+                            const product = state.originalProducts.find(op => op.id === invoice.originalProductId)?.name || '';
+                            return (
+                                <div key={id} className="mb-4 border-b pb-2">
+                                    <div className="font-semibold">{ss?.name || id}</div>
+                                    <div className="flex flex-wrap gap-6 text-sm mt-1">
+                                        <div><strong>Invoice #:</strong> {invoice.invoiceNumber}</div>
+                                        <div><strong>Date:</strong> {invoice.date}</div>
+                                        <div><strong>Type:</strong> {originalType}</div>
+                                        <div><strong>Product:</strong> {product}</div>
+                                        <div><strong>Qty:</strong> {invoice.quantityPurchased}</div>
+                                        <div><strong>Rate:</strong> {invoice.rate}</div>
+                                        <div><strong>Amount:</strong> {invoice.amount}</div>
+                                        <div><strong>Currency:</strong> {invoice.currency}</div>
+                                        <div><strong>Conv. Rate:</strong> {invoice.conversionRate}</div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                        {/* Additional Cost Summary */}
+                        <div className="mt-4">
+                            <h4 className="font-semibold mb-1">Additional Costs</h4>
+                            <div className="flex flex-wrap gap-8 text-sm">
+                                <div><strong>Freight:</strong> {additionalCosts.freight.amount || 0} {additionalCosts.freight.currency} {state.freightForwarders.find(f => f.id === additionalCosts.freight.agentId)?.name ? `(${state.freightForwarders.find(f => f.id === additionalCosts.freight.agentId)?.name})` : ''}</div>
+                                <div><strong>Clearing:</strong> {additionalCosts.clearing.amount || 0} {additionalCosts.clearing.currency} {state.clearingAgents.find(f => f.id === additionalCosts.clearing.agentId)?.name ? `(${state.clearingAgents.find(f => f.id === additionalCosts.clearing.agentId)?.name})` : ''}</div>
+                                <div><strong>Commission:</strong> {additionalCosts.commission.amount || 0} {additionalCosts.commission.currency} {state.commissionAgents.find(f => f.id === additionalCosts.commission.agentId)?.name ? `(${state.commissionAgents.find(f => f.id === additionalCosts.commission.agentId)?.name})` : ''}</div>
+                            </div>
+                        </div>
+                        {/* Total Calculation */}
+                        <div className="mt-6 text-right text-lg font-bold">
+                            {(() => {
+                                const invoiceTotal = selectedSubSupplierIds.reduce((sum, id) => sum + (parseFloat(subSupplierInvoices[id]?.amount || '0') || 0), 0);
+                                const addCost = ['freight','clearing','commission'].reduce((sum, k) => sum + (parseFloat(additionalCosts[k].amount || '0') || 0), 0);
+                                return `Grand Total: $${(invoiceTotal + addCost).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+                            })()}
+                        </div>
+                        <div className="mt-6 flex justify-end gap-4">
+                            <button
+                                className="px-4 py-2 bg-slate-200 text-slate-800 rounded hover:bg-slate-300"
+                                onClick={() => setIsPreviewOpen(false)}
+                            >
+                                Close
+                            </button>
+                            <button
+                                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 print:hidden"
+                                onClick={() => window.print()}
+                            >
+                                Print
+                            </button>
+                            <button
+                                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-semibold"
+                                onClick={() => {
+                                    // Save composite purchase logic
+                                    const supplier = state.suppliers.find(s => s.id === mainSupplierId);
+                                    // --- Save all sub-supplier purchases as before ---
+                                    const purchaseId = generateOriginalPurchaseId(state.nextOriginalPurchaseNumber, mainInvoiceDate, supplier?.name || 'Unknown');
+                                    let totalAmountUSD = 0;
+                                    let totalAmountFC = 0;
+                                    let mainCurrency = 'Dollar';
+                                    let jeDate = mainInvoiceDate;
+                                    selectedSubSupplierIds.forEach(id => {
+                                        const invoice = subSupplierInvoices[id];
+                                        if (!invoice) return;
+                                        const purchaseObj = {
+                                            id: purchaseId + '-' + id,
+                                            mainInvoiceNumber,
+                                            mainInvoiceDate,
+                                            mainSupplierId,
+                                            subSupplierId: id,
+                                            ...invoice,
+                                            additionalCosts,
+                                            createdAt: new Date().toISOString(),
+                                            createdBy: userProfile?.uid || '',
+                                        };
+                                        dispatch({
+                                            type: 'ADD_ENTITY',
+                                            payload: { entity: 'originalPurchases', data: purchaseObj }
+                                        });
+                                        // Sum for main journal entry
+                                        const qty = parseFloat(invoice.quantityPurchased || '0');
+                                        const rate = parseFloat(invoice.rate || '0');
+                                        const amountFC = qty * rate;
+                                        const conversionRate = parseFloat(invoice.conversionRate || '1');
+                                        const amountUSD = amountFC * conversionRate;
+                                        totalAmountUSD += amountUSD;
+                                        totalAmountFC += amountFC;
+                                        mainCurrency = invoice.currency;
+                                        jeDate = invoice.date;
+                                    });
+                                    // --- Main Journal Entries (one for all) ---
+                                    const baseDescription = `Composite Purchase from ${supplier?.name || mainSupplierId}`;
+                                    dispatch({
+                                        type: 'ADD_ENTITY',
+                                        payload: {
+                                            entity: 'journalEntries',
+                                            data: {
+                                                id: `je-d-${purchaseId}`,
+                                                voucherId: `JV-${purchaseId}`,
+                                                date: jeDate,
+                                                entryType: 'Journal',
+                                                account: 'EXP-004',
+                                                debit: totalAmountUSD,
+                                                credit: 0,
+                                                description: baseDescription,
+                                                entityId: mainSupplierId,
+                                                entityType: 'supplier', // Only supplier
+                                                originalAmount: mainCurrency !== 'Dollar' ? { amount: totalAmountFC, currency: mainCurrency } : undefined,
+                                                createdBy: userProfile?.uid || '',
+                                            }
+                                        }
+                                    });
+                                    dispatch({
+                                        type: 'ADD_ENTITY',
+                                        payload: {
+                                            entity: 'journalEntries',
+                                            data: {
+                                                id: `je-c-${purchaseId}`,
+                                                voucherId: `JV-${purchaseId}`,
+                                                date: jeDate,
+                                                entryType: 'Journal',
+                                                account: 'AP-001',
+                                                debit: 0,
+                                                credit: totalAmountUSD,
+                                                description: baseDescription,
+                                                entityId: mainSupplierId,
+                                                entityType: 'supplier', // Only supplier
+                                                originalAmount: mainCurrency !== 'Dollar' ? { amount: totalAmountFC, currency: mainCurrency } : undefined,
+                                                createdBy: userProfile?.uid || '',
+                                            }
+                                        }
+                                    });
+                                    // --- Additional Costs (Freight, Clearing, Commission) ---
+                                    const addCosts = [
+                                        { key: 'freight', label: 'Freight', agentArr: state.freightForwarders, expAccount: 'EXP-005' },
+                                        { key: 'clearing', label: 'Clearing', agentArr: state.clearingAgents, expAccount: 'EXP-006' },
+                                        { key: 'commission', label: 'Commission', agentArr: state.commissionAgents, expAccount: 'EXP-008' },
+                                    ];
+                                    addCosts.forEach(cost => {
+                                        const c = additionalCosts[cost.key];
+                                        if (c && c.agentId && parseFloat(c.amount || '0') > 0) {
+                                            const agent = cost.agentArr.find(a => a.id === c.agentId);
+                                            const costAmountFC = parseFloat(c.amount || '0');
+                                            const costConvRate = parseFloat(c.conversionRate || '1');
+                                            const costAmountUSD = costAmountFC * costConvRate;
+                                            const desc = `${cost.label} for INV ${mainInvoiceNumber} (${agent?.name || c.agentId})`;
+                                            // Map correct entityType for report filtering
+                                            let entityType = '';
+                                            if (cost.key === 'freight') entityType = 'freightForwarder';
+                                            else if (cost.key === 'clearing') entityType = 'clearingAgent';
+                                            else if (cost.key === 'commission') entityType = 'commissionAgent';
+                                            // Debit: Expense
+                                            dispatch({
+                                                type: 'ADD_ENTITY',
+                                                payload: {
+                                                    entity: 'journalEntries',
+                                                    data: {
+                                                        id: `je-d-${cost.key}-${purchaseId}`,
+                                                        voucherId: `JV-${purchaseId}`,
+                                                        date: jeDate,
+                                                        entryType: 'Journal',
+                                                        account: cost.expAccount,
+                                                        debit: costAmountUSD,
+                                                        credit: 0,
+                                                        description: desc,
+                                                        entityId: c.agentId,
+                                                        entityType,
+                                                        originalAmount: c.currency !== 'Dollar' ? { amount: costAmountFC, currency: c.currency } : undefined,
+                                                        createdBy: userProfile?.uid || '',
+                                                    }
+                                                }
+                                            });
+                                            // Credit: Accounts Payable
+                                            dispatch({
+                                                type: 'ADD_ENTITY',
+                                                payload: {
+                                                    entity: 'journalEntries',
+                                                    data: {
+                                                        id: `je-c-${cost.key}-${purchaseId}`,
+                                                        voucherId: `JV-${purchaseId}`,
+                                                        date: jeDate,
+                                                        entryType: 'Journal',
+                                                        account: 'AP-001',
+                                                        debit: 0,
+                                                        credit: costAmountUSD,
+                                                        description: desc,
+                                                        entityId: c.agentId,
+                                                        entityType,
+                                                        originalAmount: c.currency !== 'Dollar' ? { amount: costAmountFC, currency: c.currency } : undefined,
+                                                        createdBy: userProfile?.uid || '',
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
+                                    showNotification('Composite purchase saved successfully!');
+                                    setIsPreviewOpen(false);
+                                    // Optionally reset form fields here
+                                }}
+                            >
+                                Confirm & Continue
+                            </button>
+                        </div>
+                    </div>
+                </Modal>
+            )}
+        </>
     );
 };
 
