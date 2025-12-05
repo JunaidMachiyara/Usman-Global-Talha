@@ -103,15 +103,9 @@ const ItemPerformanceReport: React.FC = () => {
                         }
                     }, 0);
 
-                    const totalKgSoldInPeriod = salesForThisItemInPeriod.reduce((sum, soldItem) => {
-                        if (item.packingType === PackingType.Bales) {
-                            return sum + (soldItem.quantity * item.baleSize);
-                        } else {
-                            return sum + soldItem.quantity;
-                        }
-                    }, 0);
-                    
-                    const totalProductionCostInPeriod = totalKgSoldInPeriod * item.avgProductionPrice;
+                    // Cost = quantity (packages) × avgProductionPrice (per package)
+                    // No KG conversion needed since price is per package
+                    const totalProductionCostInPeriod = salesQtyInPeriod * item.avgProductionPrice;
 
                     salesDifference = totalRevenueInPeriod - totalProductionCostInPeriod;
                 }

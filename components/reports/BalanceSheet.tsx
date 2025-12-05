@@ -89,9 +89,9 @@ const BalanceSheet: React.FC<BalanceSheetProps> = ({ onNavigate }) => {
             const currentStockUnits = openingStock + production - sales;
             
             if (currentStockUnits > 0) {
-                const unitWeight = item.packingType !== PackingType.Kg ? (item.baleSize || 0) : 1;
-                const stockKg = currentStockUnits * unitWeight;
-                finishedGoodsInventoryValue += stockKg * item.avgProductionPrice;
+                // Inventory Value = currentStock (packages) × avgProductionPrice (per package)
+                // No KG conversion needed since price is already per package
+                finishedGoodsInventoryValue += currentStockUnits * item.avgProductionPrice;
             }
         });
 

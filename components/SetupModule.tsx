@@ -1617,7 +1617,7 @@ interface SetupModuleProps {
 }
 
 const SetupModule: React.FC<SetupModuleProps> = ({ userProfile, isModalMode = false, modalTarget, onModalClose, onModalSave, initialSection }) => {
-    const { state } = useData();
+    const { state, dispatch } = useData();
     const [notification, setNotification] = useState<string | null>(null);
     const [activeModal, setActiveModal] = useState<string | null>(null);
     const [importModalConfig, setImportModalConfig] = useState<{ isOpen: boolean; entityName: ImportableEntity | null }>({ isOpen: false, entityName: null });
@@ -1831,6 +1831,39 @@ const SetupModule: React.FC<SetupModuleProps> = ({ userProfile, isModalMode = fa
                             <span>Delete All Items ({state.items.length})</span>
                         </button>
                         <p className="text-xs text-red-600 mt-2 font-semibold">⚠️ WARNING: This will permanently delete all items. Use only before importing fresh data.</p>
+                        
+                        {/* Delete All Customers Button */}
+                        <button 
+                            onClick={() => {
+                                const customerCount = state.customers.length;
+                                if (customerCount === 0) {
+                                    showNotification('⚠️ No customers to delete.');
+                                    return;
+                                }
+                                if (window.confirm(`Are you sure you want to DELETE ALL ${customerCount} CUSTOMERS?\n\nThis action CANNOT be undone!\n\nClick OK to proceed with deletion.`)) {
+                                    if (window.confirm(`FINAL WARNING: You are about to delete ${customerCount} customers permanently.\n\nAre you absolutely sure?`)) {
+                                        const newState = { 
+                                            ...state, 
+                                            customers: [] 
+                                        };
+                                        
+                                        dispatch({ 
+                                            type: 'RESTORE_STATE', 
+                                            payload: newState
+                                        });
+                                        
+                                        showNotification(`✅ Successfully deleted ${customerCount} customers. You can now import fresh data.`);
+                                    }
+                                }
+                            }}
+                            className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors text-sm font-semibold flex items-center space-x-2 mt-4"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            <span>Delete All Customers ({state.customers.length})</span>
+                        </button>
+                        <p className="text-xs text-red-600 mt-2 font-semibold">⚠️ WARNING: This will permanently delete all customers. Use only before importing fresh data.</p>
                     </div>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">

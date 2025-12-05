@@ -90,9 +90,9 @@ const StockWorthReport: React.FC<StockWorthReportProps> = ({ initialFilters }) =
                 
                 const closingStock = openingStock + productionQtyInPeriod - salesQtyInPeriod;
 
-                const unitWeight = item.packingType !== PackingType.Kg ? (item.baleSize || 0) : 1;
-                const closingStockKg = closingStock * unitWeight;
-                const stockWorth = closingStockKg * item.avgProductionPrice;
+                // Stock Worth = closingStock (packages) × avgProductionPrice (per package)
+                // No need to multiply by baleSize since price is already per package
+                const stockWorth = closingStock * item.avgProductionPrice;
 
                 return {
                     id: item.id,

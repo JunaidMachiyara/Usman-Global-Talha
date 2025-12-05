@@ -956,10 +956,99 @@ const ProductionForm: React.FC<{
     
     const itemDetails = state.items.find(i => i.id === formData.itemId);
     
+    const handleCSVUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const text = event.target?.result as string;
+            if (!text) {
+                showNotification('File is empty.', 'error');
+                return;
+            }
+
+            const lines = text.split(/\r\n|\n/).filter(line => line.trim() !== '');
+            if (lines.length < 2) {
+                showNotification('CSV must have headers and at least one data row.', 'error');
+                return;
+            }
+
+            const headers = lines[0].toLowerCase().split(',').map(h => h.trim());
+            const idIndex = headers.indexOf('id');
+            const quantityIndex = headers.indexOf('quantity');
+
+            if (idIndex === -1 || quantityIndex === -1) {
+                showNotification('CSV must have "id" and "quantity" columns.', 'error');
+                return;
+            }
+
+            let successCount = 0;
+            let errorCount = 0;
+            const newStagedProductions: StagedProduction[] = [];
+            const newTempNextBaleNumbers = { ...tempNextBaleNumbers };
+
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(v => v.trim());
+                const itemId = values[idIndex];
+                const quantityStr = values[quantityIndex];
+                const quantityNum = Number(quantityStr);
+
+                if (!itemId || !quantityStr || quantityNum <= 0) {
+                    errorCount++;
+                    continue;
+                }
+
+                const itemDetails = state.items.find(item => item.id === itemId);
+                if (!itemDetails) {
+                    errorCount++;
+                    continue;
+                }
+
+                let newProduction: StagedProduction = {
+                    id: `temp_csv_${Date.now()}_${i}`,
+                    date: formData.date,
+                    itemId,
+                    quantityProduced: quantityNum,
+                    itemName: itemDetails.name,
+                    itemCategory: state.categories.find(c => c.id === itemDetails.categoryId)?.name || 'N/A',
+                    packingType: itemDetails.packingType,
+                    packingSize: itemDetails.baleSize,
+                };
+
+                if (itemDetails.packingType === PackingType.Bales) {
+                    const startBaleNumber = newTempNextBaleNumbers[itemId] || itemDetails.nextBaleNumber || 1;
+                    const endBaleNumber = startBaleNumber + quantityNum - 1;
+                    newProduction = { ...newProduction, startBaleNumber, endBaleNumber };
+                    newTempNextBaleNumbers[itemId] = endBaleNumber + 1;
+                }
+
+                newStagedProductions.push(newProduction);
+                successCount++;
+            }
+
+            setStagedProductions(prev => [...prev, ...newStagedProductions]);
+            setTempNextBaleNumbers(newTempNextBaleNumbers);
+            showNotification(`CSV uploaded: ${successCount} entries added, ${errorCount} errors.`);
+        };
+
+        reader.readAsText(file);
+        e.target.value = ''; // Reset input
+    };
+    
     return (
         <div className="grid grid-cols-1 md:grid-cols-10 gap-8">
             <div className="md:col-span-3">
-                <h3 className="text-lg font-bold text-slate-700 mb-4">New Production Entry</h3>
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-bold text-slate-700">New Production Entry</h3>
+                    <label className="cursor-pointer px-3 py-1 bg-teal-600 text-white rounded-md hover:bg-teal-700 text-xs font-semibold flex items-center space-x-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                        </svg>
+                        <span>Upload CSV</span>
+                        <input type="file" accept=".csv" onChange={handleCSVUpload} className="hidden" />
+                    </label>
+                </div>
                 {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4" role="alert"><p>{error}</p></div>}
                 <form onSubmit={handleAddToList} className="space-y-4">
                     <div><label className="block text-sm font-medium text-slate-700">Date</label><input type="date" value={formData.date} onChange={e => setFormData({ ...formData, date: e.target.value })} min={minDate} className="mt-1 w-full p-2 rounded-md" /></div>
