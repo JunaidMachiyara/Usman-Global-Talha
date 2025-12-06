@@ -818,6 +818,9 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
         .map(bn => parseInt(bn, 10))
         .sort((a, b) => b - a)[0];
     const nextBatchNumber = lastNumericBatch ? String(lastNumericBatch + 1) : '101';
+
+    // Add container number state
+    const [containerNumber, setContainerNumber] = useState('');
     const [mainInvoiceNumber, setMainInvoiceNumber] = useState(nextBatchNumber);
     const [mainInvoiceDate, setMainInvoiceDate] = useState(() => new Date().toISOString().split('T')[0]);
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -919,7 +922,7 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
 
     return (
         <>
-            <div className="mt-6 max-w-xl grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="mt-6 max-w-xl grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                     <label className="block text-sm font-medium mb-1">Main Invoice Number</label>
                     <input
@@ -927,6 +930,16 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
                         className="w-full border rounded p-2 mb-2"
                         value={mainInvoiceNumber}
                         onChange={e => setMainInvoiceNumber(e.target.value)}
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium mb-1">Container #</label>
+                    <input
+                        type="text"
+                        className="w-full border rounded p-2 mb-2"
+                        value={containerNumber}
+                        onChange={e => setContainerNumber(e.target.value)}
+                        placeholder="Enter container number"
                     />
                 </div>
                 <div>
@@ -1262,7 +1275,10 @@ const CompositePurchaseForm: React.FC<CompositePurchaseFormProps> = ({ showNotif
                             {(() => {
                                 const invoiceTotal = selectedSubSupplierIds.reduce((sum, id) => sum + (parseFloat(subSupplierInvoices[id]?.amount || '0') || 0), 0);
                                 const addCost = ['freight','clearing','commission'].reduce((sum, k) => sum + (parseFloat(additionalCosts[k].amount || '0') || 0), 0);
-                                return `Grand Total: $${(invoiceTotal + addCost).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+                                // Use AED if all sub-supplier invoices are in AED, otherwise fallback to $.
+                                const allAED = selectedSubSupplierIds.every(id => (subSupplierInvoices[id]?.currency === Currency.AED));
+                                const currencyLabel = allAED ? 'AED' : '$';
+                                return `Grand Total: ${currencyLabel}${(invoiceTotal + addCost).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
                             })()}
                         </div>
                         <div className="mt-6 flex justify-end gap-4">
